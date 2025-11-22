@@ -99,4 +99,48 @@ public function summary(Request $request)
             ], 400);
         }
 
-        
+
+DB::transaction(function () use ($user, $stock, $validated, $totalCost) {
+            // Deduct balance
+            $user->balance -= $totalCost;
+            $user->save();
+
+            // Update or create portfolio entry
+            $portfolio = Portfolio::firstOrNew([
+                'user_id' => $user->id,
+                'stock_id' => $stock->id,
+            ]);
+
+            $newQuantity = $portfolio->quantity + $validated['quantity'];
+            $portfolio->average_price = (($portfolio->average_price * $portfolio->quantity) + $totalCost) / $newQuantity;
+            $portfolio->quantity = $newQuantity;
+            $portfolio->save();
+
+            // Record transaction
+            Transaction::create([
+                'user_id' => $user->id,
+                'stock_id' => $stock->id,
+                'type' => 'buy',
+                'quantity' => $validated['quantity'],
+                'price' => $stock->current_price,
+                'total_amount' => $totalCost,
+            ]);
+
+            // Award XP
+            $user->experience_points += 10;
+            if ($user->experience_points >= $user->level * 1000) {
+                $user->level++;
+                $user->experience_points = 0;
+            }
+            $user->save();
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Stock purchased successfully',
+            'data' => [
+                'new_balance' => $user->fresh()->balance,
+                'xp_earned' => 10,
+            ]
+        ]);
+    }
