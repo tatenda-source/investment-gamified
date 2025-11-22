@@ -144,3 +144,67 @@ DB::transaction(function () use ($user, $stock, $validated, $totalCost) {
             ]
         ]);
     }
+
+    public function sellStock(Request $request)
+    {
+        // Similar implementation for selling stocks
+        $validated = $request->validate([
+            'stock_symbol' => 'required|exists:stocks,symbol',
+            'quantity' => 'required|integer|min:1',
+        ]);
+
+        $user = $request->user();
+        $stock = Stock::where('symbol', $validated['stock_symbol'])->first();
+        $portfolio = Portfolio::where('user_id', $user->id)->where('stock
+
+       if (!$portfolio || $portfolio->quantity < $validated['quantity']) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Insufficient stock quantity'
+            ], 400);
+        }
+
+   $totalRevenue = $stock->current_price * $validated['quantity'];
+
+        DB::transaction(function () use ($user, $stock, $portfolio, $validated, $totalRevenue) {
+            // Add to balance
+            $user->balance += $totalRevenue;
+            $user->save();
+
+            // Update portfolio
+            $portfolio->quantity -= $validated['quantity'];
+            if ($portfolio->quantity == 0) {
+                $portfolio->delete();
+            } else {
+                $portfolio->save();
+            }
+
+            // Record transaction
+            Transaction::create([
+                'user_id' => $user->id,
+                'stock_id' => $stock->id,
+                'type' => 'sell',
+                'quantity' => $validated['quantity'],
+                'price' => $stock->current_price,
+                'total_amount' => $totalRevenue,
+            ]);
+
+            // Award XP
+            $user->experience_points += 15;
+            if ($user->experience_points >= $user->level * 1000) {
+                $user->level++;
+                $user->experience_points = 0;
+            }
+            $user->save();
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Stock sold successfully',
+            'data' => [
+                'new_balance' => $user->fresh()->balance,
+                'xp_earned' => 15,
+            ]
+        ]);
+    }
+}
