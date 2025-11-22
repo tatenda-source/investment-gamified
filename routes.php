@@ -20,3 +20,34 @@ Route::middleware ('auth:sanctum')->group (function(){
     Route::get('/achievements', [AchievementController::class, 'index']);
     Route::get('/leaderboard', [AchievementController::class, 'leaderboard']);
 });
+
+//app/Http/Controllers/Api/PortfolioController.php
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use App\Models\Portfolio;
+use App\Models\Stock;
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+class PortfolioController extends Controller
+{
+    Public function index(request$request){
+        $portfolio = Portfolio::with ('stocks')->where('user_id', $request->user()->id)->get();
+        return response()->json([
+            'success' => true,
+            'data' => $portfolio -> map(funtion($item){
+                return [
+                    'stock_symbol' => $item -> stock-> symbol,
+                    'stock_name' => $item -> stock-> name,
+                    'quantity' => $item -> quantity,
+                    'average_price' => $item -> average_price,
+                    'current_price' => $item -> stock-> current_price,
+                    'total_value' => $item -> quantity * $item -> stock-> current_price,
+                    'profit_loss' => ($item -> stock-> current_price - $item -> average_price) * $item -> quantity,
+                    'profit_loss_percentage' => (($item -> stock-> current_price - $item -> average_price) / $item -> average_price) * 100,
+                ];
+            })
+        ]);
+    }
+}
