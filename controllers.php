@@ -28,3 +28,22 @@ class StockController extends Controller
             })
         ]);
     }
+
+     public function show($symbol)
+    {
+        $stock = Stock::where('symbol', $symbol)->firstOrFail();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'symbol' => $stock->symbol,
+                'name' => $stock->name,
+                'current_price' => $stock->current_price,
+                'change_percentage' => $stock->change_percentage,
+                'category' => $stock->category,
+                'description' => $stock->description,
+                'kid_friendly_description' => $stock->kid_friendly_description,
+                'fun_fact' => $stock->fun_fact,
+            ]
+        ]);
+    }
