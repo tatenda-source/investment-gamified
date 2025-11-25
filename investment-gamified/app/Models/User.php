@@ -149,3 +149,27 @@ class Transaction extends Model
         return $this->belongsTo(Stock::class);
     }
 }
+
+// app/Models/Achievement.php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Achievement extends Model
+{
+    protected $fillable = [
+        'name',
+        'description',
+        'icon',
+        'xp_reward',
+        'requirement_type',
+        'requirement_value',
+    ];
+
+    public function users()
+    {
+        return $this->belongsToMany(User::class)
+            ->withTimestamps()
+            ->withPivot('unlocked_at');
+    }
+}
