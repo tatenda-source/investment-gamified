@@ -12,7 +12,9 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            //
+            $table->decimal('balance', 10, 2)->default(10000.00)->after('password');
+            $table->integer('level')->default(1)->after('balance');
+            $table->integer('experience_points')->default(0)->after('level');
         });
     }
 
@@ -22,7 +24,7 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            //
+            $table->dropColumn(['balance', 'level', 'experience_points']);
         });
     }
 };
