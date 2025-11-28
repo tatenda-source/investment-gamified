@@ -22,7 +22,7 @@ class FinancialModelingPrepService
     }
 
     /**
-     * Get real-time stock quote (FREE TIER SAFE)
+     * Get real-time stock quote (FREE TIER - v3 /quote/ endpoint)
      */
     public function getQuote(string $symbol): ?array
     {
@@ -30,8 +30,8 @@ class FinancialModelingPrepService
         
         return Cache::remember($cacheKey, now()->addMinutes(5), function () use ($symbol) {
             try {
-                // FIX: use free-tier /quote-short endpoint
-                $response = Http::get("{$this->baseUrl}/quote-short/{$symbol}", [
+                // Use v3 /quote/ endpoint (not /quote-short/) which works on free tier
+                $response = Http::timeout(10)->get("{$this->baseUrl}/quote/{$symbol}", [
                     'apikey' => $this->apiKey,
                 ]);
 
@@ -40,12 +40,20 @@ class FinancialModelingPrepService
                 if ($response->successful()) {
                     $data = $response->json();
 
+                    // Check for error message
+                    if (isset($data['Error Message'])) {
+                        Log::error("FMP API Error for {$symbol}: " . $data['Error Message']);
+                        return null;
+                    }
+
                     if (!empty($data) && isset($data[0])) {
                         $quote = $data[0];
                         return [
                             'symbol'   => $quote['symbol'] ?? null,
                             'price'    => $quote['price'] ?? null,
                             'volume'   => $quote['volume'] ?? null,
+                            'change'   => $quote['change'] ?? null,
+                            'changesPercentage' => $quote['changesPercentage'] ?? null,
                         ];
                     }
                 }
@@ -59,7 +67,7 @@ class FinancialModelingPrepService
     }
 
     /**
-     * Get company profile (FREE TIER SAFE)
+     * Get company profile (FREE TIER - v3 API)
      */
     public function getCompanyProfile(string $symbol): ?array
     {
@@ -67,8 +75,8 @@ class FinancialModelingPrepService
         
         return Cache::remember($cacheKey, now()->addDays(7), function () use ($symbol) {
             try {
-                // This endpoint WORKS on free tier
-                $response = Http::get("{$this->baseUrl}/profile/{$symbol}", [
+                // v3 API endpoint
+                $response = Http::timeout(10)->get("{$this->baseUrl}/profile/{$symbol}", [
                     'apikey' => $this->apiKey,
                 ]);
 
@@ -76,6 +84,12 @@ class FinancialModelingPrepService
 
                 if ($response->successful()) {
                     $data = $response->json();
+                    
+                    // Check for error message
+                    if (isset($data['Error Message'])) {
+                        Log::error("FMP API Error for profile {$symbol}: " . $data['Error Message']);
+                        return null;
+                    }
                     
                     if (!empty($data) && isset($data[0])) {
                         return $data[0];
@@ -91,7 +105,7 @@ class FinancialModelingPrepService
     }
 
     /**
-     * Get historical prices (FREE TIER SAFE)
+     * Get historical prices (FREE TIER - v3 API)
      */
     public function getHistoricalPrices(string $symbol, int $days = 30): ?array
     {
@@ -102,7 +116,8 @@ class FinancialModelingPrepService
                 $from = now()->subDays($days)->format('Y-m-d');
                 $to = now()->format('Y-m-d');
                 
-                $response = Http::get("{$this->baseUrl}/historical-price-full/{$symbol}", [
+                // v3 API endpoint - use historical-price-full
+                $response = Http::timeout(10)->get("{$this->baseUrl}/historical-price-full/{$symbol}", [
                     'from'   => $from,
                     'to'     => $to,
                     'apikey' => $this->apiKey,
@@ -112,6 +127,12 @@ class FinancialModelingPrepService
 
                 if ($response->successful()) {
                     $data = $response->json();
+
+                    // Check for error message
+                    if (isset($data['Error Message'])) {
+                        Log::error("FMP API Error for history {$symbol}: " . $data['Error Message']);
+                        return null;
+                    }
 
                     if (isset($data['historical'])) {
                         return $data['historical'];
@@ -127,12 +148,12 @@ class FinancialModelingPrepService
     }
 
     /**
-     * Search stocks
+     * Search stocks (v4 API)
      */
     public function searchStocks(string $query): ?array
     {
         try {
-            $response = Http::get("{$this->baseUrl}/search", [
+            $response = Http::timeout(10)->get("{$this->baseUrl}/search", [
                 'query'  => $query,
                 'limit'  => 10,
                 'apikey' => $this->apiKey,
@@ -141,7 +162,15 @@ class FinancialModelingPrepService
             Log::info("FMP Search response for {$query}: " . $response->body());
 
             if ($response->successful()) {
-                return $response->json();
+                $data = $response->json();
+                
+                // Check for error message
+                if (isset($data['Error Message'])) {
+                    Log::error("FMP API Error for search {$query}: " . $data['Error Message']);
+                    return null;
+                }
+                
+                return $data;
             }
 
             return null;
