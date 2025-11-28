@@ -4,11 +4,11 @@ namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
 use App\Models\Stock;
-use App\Services\FinancialModelingPrepService;
+use App\Services\StockApiService;
 
 class StockSeeder extends Seeder
 {
-    public function run(FinancialModelingPrepService $fmp)
+    public function run(StockApiService $stockService)
     {
         // Popular kid-friendly stocks
         $popularSymbols = [
@@ -25,42 +25,37 @@ class StockSeeder extends Seeder
         ];
 
         foreach ($popularSymbols as $symbol => $kidFriendly) {
-            $quote = $fmp->getQuote($symbol);
-            $profile = $fmp->getCompanyProfile($symbol);
+            $quote = $stockService->getQuote($symbol);
+            $overview = $stockService->getCompanyOverview($symbol);
             
-            if ($quote && $profile) {
+            if ($quote) {
                 Stock::updateOrCreate(
                     ['symbol' => $symbol],
                     [
-                        'name' => $quote['name'] ?? $profile['companyName'],
-                        'description' => $profile['description'] ?? '',
+                        'name' => $overview['Name'] ?? $symbol,
+                        'description' => $overview['Description'] ?? '',
                         'kid_friendly_description' => $kidFriendly,
-                        'category' => $this->categorizeStock($profile),
+                        'category' => $overview['Sector'] ?? 'Other',
                         'current_price' => $quote['price'],
-                        'change_percentage' => $quote['change_percent'] ?? 0,
-                        'logo_url' => $profile['image'] ?? null,
+                        'change_percentage' => rtrim($quote['change_percent'] ?? '0%', '%'),
+                        'logo_url' => null, // AlphaVantage doesn't provide logos
+                        'fun_fact' => $overview['Industry'] ?? 'A cool company!', // Fallback for fun_fact
                     ]
                 );
                 
                 echo "Imported {$symbol}\n";
+            } else {
+                echo "Failed to fetch {$symbol}\n";
             }
             
-            // Rate limiting
-            sleep(1);
+            // Rate limiting (AlphaVantage free tier is 5 calls/minute usually, but let's be safe)
+            sleep(15); 
         }
     }
 
     private function categorizeStock(array $profile): string
     {
-        $sector = strtolower($profile['sector'] ?? '');
-        
-        return match(true) {
-            str_contains($sector, 'tech') => 'Tech',
-            str_contains($sector, 'consumer') => 'Retail',
-            str_contains($sector, 'food') => 'Food',
-            str_contains($sector, 'entertainment') => 'Entertainment',
-            str_contains($sector, 'financial') => 'Finance',
-            default => 'Other',
-        };
+        // Not used anymore but keeping for reference if needed
+        return 'Other';
     }
 }
