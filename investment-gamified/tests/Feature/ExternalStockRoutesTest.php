@@ -11,6 +11,10 @@ class ExternalStockRoutesTest extends TestCase
 
     public function test_search_requires_query_param()
     {
+        \Laravel\Sanctum\Sanctum::actingAs(
+            \App\Models\User::factory()->create()
+        );
+
         $response = $this->getJson('/api/external/stocks/search');
 
         $response->assertStatus(422);

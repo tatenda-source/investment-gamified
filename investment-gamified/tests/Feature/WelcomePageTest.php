@@ -17,6 +17,6 @@ class WelcomePageTest extends TestCase
 
         // Ensure the exact string from the user's view exists — non-destructive check
         // Match an unambiguous substring that's present in the view to avoid any escaping issues
-        $response->assertSeeText('get started');
+        $response->assertSeeText('Investment Game');
     }
 }

@@ -113,7 +113,7 @@ async function loadUserData() {
     if (data.success) {
         document.getElementById('userBalance').textContent = '$' + parseFloat(data.data.balance).toFixed(2);
     } else {
-        console.error('Failed to load user data:', data.message);
+        // console.error('Failed to load user data:', data.message);
     }
 }
 
@@ -122,7 +122,7 @@ async function loadStocksForWizard() {
     const data = await api.getStocks();
 
     if (!data.success) {
-        console.error('Failed to load stocks:', data.message);
+        // console.error('Failed to load stocks:', data.message);
         return;
     }
 

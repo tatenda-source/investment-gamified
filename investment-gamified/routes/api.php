@@ -33,7 +33,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/auth/user', [AuthController::class, 'user']);
     // External/third-party stock API (AlphaVantage / FMP)
     // Secured with Sanctum and Throttled to prevent quota abuse
-    Route::middleware(['throttle:api'])->prefix('external')->group(function () {
+    Route::middleware(['throttle:60,1'])->prefix('external')->group(function () {
         Route::get('/stocks/quote/{symbol}', [ExternalStockController::class, 'quote']);
         Route::get('/stocks/history/{symbol}', [ExternalStockController::class, 'history']);
         Route::get('/stocks/search', [ExternalStockController::class, 'search']);

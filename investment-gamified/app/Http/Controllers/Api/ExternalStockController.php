@@ -25,10 +25,14 @@ class ExternalStockController extends Controller
     {
         $source = strtolower($request->query('source', 'alphavantage'));
 
-        if ($source === 'fmp') {
-            $data = $this->fmpService->getQuote($symbol);
-        } else {
-            $data = $this->alphaService->getQuote($symbol);
+        try {
+            if ($source === 'fmp') {
+                $data = $this->fmpService->getQuote($symbol);
+            } else {
+                $data = $this->alphaService->getQuote($symbol);
+            }
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'External API error: ' . $e->getMessage()], 503);
         }
 
         if (!$data) {
@@ -46,11 +50,15 @@ class ExternalStockController extends Controller
         $source = strtolower($request->query('source', 'alphavantage'));
         $days = (int) $request->query('days', 30);
 
-        if ($source === 'fmp') {
-            // fmp returns history as array of records
-            $data = $this->fmpService->getHistoricalPrices($symbol, $days);
-        } else {
-            $data = $this->alphaService->getHistoricalData($symbol, 'compact');
+        try {
+            if ($source === 'fmp') {
+                // fmp returns history as array of records
+                $data = $this->fmpService->getHistoricalPrices($symbol, $days);
+            } else {
+                $data = $this->alphaService->getHistoricalData($symbol, 'compact');
+            }
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'External API error: ' . $e->getMessage()], 503);
         }
 
         if (!$data) {
@@ -72,10 +80,14 @@ class ExternalStockController extends Controller
             return response()->json(['success' => false, 'message' => 'Query parameter "q" is required'], 422);
         }
 
-        if ($source === 'fmp') {
-            $data = $this->fmpService->searchStocks($query);
-        } else {
-            $data = $this->alphaService->searchStocks($query);
+        try {
+            if ($source === 'fmp') {
+                $data = $this->fmpService->searchStocks($query);
+            } else {
+                $data = $this->alphaService->searchStocks($query);
+            }
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'External API error: ' . $e->getMessage()], 503);
         }
 
         if (!$data) {
@@ -90,7 +102,11 @@ class ExternalStockController extends Controller
      */
     public function profile(string $symbol)
     {
-        $data = $this->fmpService->getCompanyProfile($symbol);
+        try {
+            $data = $this->fmpService->getCompanyProfile($symbol);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'External API error: ' . $e->getMessage()], 503);
+        }
 
         if (!$data) {
             return response()->json(['success' => false, 'message' => 'No profile data available'], 502);
