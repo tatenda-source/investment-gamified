@@ -243,7 +243,7 @@ function announce(text) {
     const live = document.querySelector('#senior-ui');
     if (live) live.setAttribute('aria-busy', 'true');
     setTimeout(() => { if (live) live.setAttribute('aria-busy', 'false') }, 400);
-    console.log('[announce]', text);
+
 }
 
 function initWizard() {
