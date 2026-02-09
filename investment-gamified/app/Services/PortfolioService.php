@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Portfolio;
 use App\Models\Stock;
 use App\Models\Transaction;
+use App\Models\PortfolioAudit;
 use Illuminate\Support\Facades\DB;
 
 class PortfolioService
@@ -25,6 +26,11 @@ class PortfolioService
      */
     public function buyStock($user, string $stockSymbol, int $quantity): array
     {
+        // Guard against invalid quantities
+        if ($quantity <= 0) {
+            return ['success' => false, 'message' => 'Quantity must be greater than zero'];
+        }
+
         $stock = Stock::where('symbol', $stockSymbol)->first();
         if (!$stock) {
             return ['success' => false, 'message' => 'Stock not found'];
@@ -70,7 +76,7 @@ class PortfolioService
                 $portfolio->quantity = $newQuantity;
                 $portfolio->save();
 
-                // Record transaction (immutable log)
+                // Record legacy transaction (backwards compatible)
                 Transaction::create([
                     'user_id' => $lockedUser->id,
                     'stock_id' => $stock->id,
@@ -79,6 +85,39 @@ class PortfolioService
                     'price' => $stock->current_price,
                     'total_amount' => $totalCost,
                 ]);
+
+                // --- New: Immutable audit/ledger insertion ---
+                // Build a portfolio snapshot (immutable JSON) representing the
+                // state immediately after this operation. This snapshot is used
+                // for later verification, rebuilds, and checksum calculation.
+                $snapshot = [
+                    'user_id' => $lockedUser->id,
+                    'stock_id' => $stock->id,
+                    'portfolio' => [
+                        'quantity' => $portfolio->quantity,
+                        'average_price' => $portfolio->average_price,
+                    ],
+                    'user_balance' => $lockedUser->balance,
+                ];
+
+                $audit = PortfolioAudit::create([
+                    'user_id' => $lockedUser->id,
+                    'stock_id' => $stock->id,
+                    'type' => 'buy',
+                    'quantity' => $quantity,
+                    'price' => $stock->current_price,
+                    'total_amount' => $totalCost,
+                    'portfolio_snapshot' => json_encode($snapshot),
+                ]);
+
+                // Compute a checksum of the snapshot and store it on the portfolio
+                // row to provide an integrity anchor between the portfolio and
+                // the audit ledger. This field is optional but helpful for quick
+                // verification.
+                $checksum = hash('sha256', $audit->portfolio_snapshot);
+                $portfolio->ledger_checkpoint_id = $audit->id;
+                $portfolio->checksum = $checksum;
+                $portfolio->save();
 
                 // Award XP and check for level up
                 $lockedUser->experience_points += 10;
@@ -124,6 +163,11 @@ class PortfolioService
      */
     public function sellStock($user, string $stockSymbol, int $quantity): array
     {
+        // Guard against invalid quantities
+        if ($quantity <= 0) {
+            return ['success' => false, 'message' => 'Quantity must be greater than zero'];
+        }
+
         $stock = Stock::where('symbol', $stockSymbol)->first();
         if (!$stock) {
             return ['success' => false, 'message' => 'Stock not found'];
@@ -153,15 +197,20 @@ class PortfolioService
                 $lockedUser->balance += $totalRevenue;
                 $lockedUser->save();
 
-                // Update portfolio quantity on locked row
+                // Update portfolio quantity on locked row. To keep a persistent
+                // audit trail and to allow checksum/checkpointing we prefer to
+                // keep portfolio rows (even with zero quantity) rather than
+                // deleting them. This preserves the `ledger_checkpoint_id`
+                // linkage and helps with rebuilds.
                 $portfolio->quantity -= $quantity;
-                if ($portfolio->quantity == 0) {
-                    $portfolio->delete();
-                } else {
-                    $portfolio->save();
+                if ($portfolio->quantity < 0) {
+                    // Defensive: should not happen due to earlier check
+                    return ['success' => false, 'message' => 'Insufficient stock quantity'];
                 }
+                // Persist zero quantities (do not delete)
+                $portfolio->save();
 
-                // Record transaction (immutable log)
+                // Record legacy transaction (backwards compatible)
                 Transaction::create([
                     'user_id' => $lockedUser->id,
                     'stock_id' => $stock->id,
@@ -170,6 +219,32 @@ class PortfolioService
                     'price' => $stock->current_price,
                     'total_amount' => $totalRevenue,
                 ]);
+
+                // --- New: Immutable audit/ledger insertion ---
+                $snapshot = [
+                    'user_id' => $lockedUser->id,
+                    'stock_id' => $stock->id,
+                    'portfolio' => [
+                        'quantity' => $portfolio->quantity,
+                        'average_price' => $portfolio->average_price,
+                    ],
+                    'user_balance' => $lockedUser->balance,
+                ];
+
+                $audit = PortfolioAudit::create([
+                    'user_id' => $lockedUser->id,
+                    'stock_id' => $stock->id,
+                    'type' => 'sell',
+                    'quantity' => $quantity,
+                    'price' => $stock->current_price,
+                    'total_amount' => $totalRevenue,
+                    'portfolio_snapshot' => json_encode($snapshot),
+                ]);
+
+                $checksum = hash('sha256', $audit->portfolio_snapshot);
+                $portfolio->ledger_checkpoint_id = $audit->id;
+                $portfolio->checksum = $checksum;
+                $portfolio->save();
 
                 // Award XP and check for level up
                 $lockedUser->experience_points += 15;
