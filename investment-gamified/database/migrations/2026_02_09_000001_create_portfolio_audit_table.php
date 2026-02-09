@@ -27,7 +27,8 @@ return new class extends Migration {
         });
 
         // Create DB-level triggers to prevent UPDATE/DELETE on the audit table
-        $driver = DB::getDriverName();
+        // Use PDO driver name to be robust across Laravel versions
+        $driver = DB::getPdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
 
         if ($driver === 'mysql') {
             DB::unprepared('DROP TRIGGER IF EXISTS portfolio_audit_no_update');
@@ -35,13 +36,13 @@ return new class extends Migration {
             DB::unprepared('DROP TRIGGER IF EXISTS portfolio_audit_no_delete');
             DB::unprepared("CREATE TRIGGER portfolio_audit_no_delete BEFORE DELETE ON portfolio_audit FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'portfolio_audit is immutable'; END;");
         } elseif ($driver === 'sqlite') {
-            // SQLite trigger using RAISE(ABORT, 'msg')
-            DB::unprepared('CREATE TRIGGER IF NOT EXISTS portfolio_audit_no_update BEFORE UPDATE ON portfolio_audit BEGIN SELECT RAISE(ABORT, "portfolio_audit is immutable"); END;');
-            DB::unprepared('CREATE TRIGGER IF NOT EXISTS portfolio_audit_no_delete BEFORE DELETE ON portfolio_audit BEGIN SELECT RAISE(ABORT, "portfolio_audit is immutable"); END;');
+            // SQLite trigger using RAISE(ABORT, 'msg') — use single quotes in SQL
+            DB::unprepared("CREATE TRIGGER IF NOT EXISTS portfolio_audit_no_update BEFORE UPDATE ON portfolio_audit BEGIN SELECT RAISE(ABORT, 'portfolio_audit is immutable'); END;");
+            DB::unprepared("CREATE TRIGGER IF NOT EXISTS portfolio_audit_no_delete BEFORE DELETE ON portfolio_audit BEGIN SELECT RAISE(ABORT, 'portfolio_audit is immutable'); END;");
         } elseif ($driver === 'pgsql' || $driver === 'postgres') {
-            DB::unprepared('CREATE OR REPLACE FUNCTION portfolio_audit_no_update() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION ''portfolio_audit is immutable''; END; $$ LANGUAGE plpgsql;');
+            DB::unprepared("CREATE OR REPLACE FUNCTION portfolio_audit_no_update() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'portfolio_audit is immutable'; END; $$ LANGUAGE plpgsql;");
             DB::unprepared('CREATE TRIGGER portfolio_audit_no_update BEFORE UPDATE ON portfolio_audit FOR EACH ROW EXECUTE PROCEDURE portfolio_audit_no_update();');
-            DB::unprepared('CREATE OR REPLACE FUNCTION portfolio_audit_no_delete() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION ''portfolio_audit is immutable''; END; $$ LANGUAGE plpgsql;');
+            DB::unprepared("CREATE OR REPLACE FUNCTION portfolio_audit_no_delete() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'portfolio_audit is immutable'; END; $$ LANGUAGE plpgsql;");
             DB::unprepared('CREATE TRIGGER portfolio_audit_no_delete BEFORE DELETE ON portfolio_audit FOR EACH ROW EXECUTE PROCEDURE portfolio_audit_no_delete();');
         }
     }
