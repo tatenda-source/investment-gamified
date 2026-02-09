@@ -120,17 +120,20 @@ class PortfolioService
                 $portfolio->save();
 
                 // Award XP and check for level up
-                $lockedUser->experience_points += 10;
-                if ($lockedUser->experience_points >= $lockedUser->level * 1000) {
+                $xpReward = config('game.xp.buy_stock', 10);
+                $lockedUser->experience_points += $xpReward;
+                
+                $levelUpThreshold = $lockedUser->level * config('game.xp.level_up_multiplier', 1000);
+                if ($lockedUser->experience_points >= $levelUpThreshold) {
                     $lockedUser->level++;
-                    $lockedUser->experience_points = 0;
+                    $lockedUser->experience_points = 0; // Or reset to remainder if carrying over
                 }
                 $lockedUser->save();
 
                 return [
                     'success' => true,
                     'message' => 'Stock purchased successfully',
-                    'data' => ['xp_earned' => 10],
+                    'data' => ['xp_earned' => $xpReward],
                 ];
             });
 
@@ -247,8 +250,11 @@ class PortfolioService
                 $portfolio->save();
 
                 // Award XP and check for level up
-                $lockedUser->experience_points += 15;
-                if ($lockedUser->experience_points >= $lockedUser->level * 1000) {
+                $xpReward = config('game.xp.sell_stock', 15);
+                $lockedUser->experience_points += $xpReward;
+                
+                $levelUpThreshold = $lockedUser->level * config('game.xp.level_up_multiplier', 1000);
+                if ($lockedUser->experience_points >= $levelUpThreshold) {
                     $lockedUser->level++;
                     $lockedUser->experience_points = 0;
                 }
@@ -259,7 +265,7 @@ class PortfolioService
                     'message' => 'Stock sold successfully',
                     'data' => [
                         'proceeds' => $totalRevenue,
-                        'xp_earned' => 15,
+                        'xp_earned' => $xpReward,
                     ],
                 ];
             });

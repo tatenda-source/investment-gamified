@@ -10,19 +10,15 @@ use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
-    public function register(Request $request)
+    public function register(\App\Http\Requests\Auth\RegisterRequest $request)
     {
-        $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'email' => 'required|string|email|max:255|unique:users',
-            'password' => 'required|string|min:8|confirmed',
-        ]);
+        $validated = $request->validated();
 
         $user = User::create([
             'name' => $validated['name'],
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
-            'balance' => 10000.00, // Starting balance
+            'balance' => config('game.starting_balance', 10000.00),
             'level' => 1,
             'experience_points' => 0,
         ]);
@@ -36,12 +32,9 @@ class AuthController extends Controller
         ], 201);
     }
 
-    public function login(Request $request)
+    public function login(\App\Http\Requests\Auth\LoginRequest $request)
     {
-        $request->validate([
-            'email' => 'required|email',
-            'password' => 'required',
-        ]);
+        $request->validated();
 
         $user = User::where('email', $request->email)->first();
 
