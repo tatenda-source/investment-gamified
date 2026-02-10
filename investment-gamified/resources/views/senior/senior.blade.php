@@ -7,7 +7,6 @@
   {{-- Allow JS to read the app URL for API calls --}}
   <meta name="app-url" content="{{ url('/') }}">
   <link rel="stylesheet" href="{{ asset('css/senior.css') }}">
-  @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 <body>
   <main id="senior-ui" aria-live="polite">
