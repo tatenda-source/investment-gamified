@@ -83,12 +83,9 @@ class PortfolioController extends Controller
         ]);
     }
 
-    public function buyStock(Request $request)
+    public function buyStock(\App\Http\Requests\Portfolio\BuyStockRequest $request)
     {
-        $validated = $request->validate([
-            'stock_symbol' => 'required|exists:stocks,symbol',
-            'quantity' => 'required|integer|min:1',
-        ]);
+        $validated = $request->validated();
 
         $user = $request->user();
 
@@ -108,12 +105,9 @@ class PortfolioController extends Controller
         ]);
     }
 
-    public function sellStock(Request $request)
+    public function sellStock(\App\Http\Requests\Portfolio\SellStockRequest $request)
     {
-        $validated = $request->validate([
-            'stock_symbol' => 'required|exists:stocks,symbol',
-            'quantity' => 'required|integer|min:1',
-        ]);
+        $validated = $request->validated();
 
         $user = $request->user();
 

@@ -26,18 +26,12 @@ class StockApiService
     public function getQuote(string $symbol): ?array
     {
         $cacheKey = "stock_quote_{$symbol}";
-        $stale = Cache::get($cacheKey);
-
-        return $this->circuit->call(function () use ($symbol, $cacheKey) {
-            if (! $this->quota->hasQuota('alphavantage')) {
-                Log::warning('AlphaVantage quota exhausted, returning stale cache if available');
-                return Cache::get($cacheKey);
-            }
-
-            $this->quota->recordRequest('alphavantage');
-
-            return Cache::remember($cacheKey, now()->addMinutes(5), function () use ($symbol) {
-                $response = Http::get($this->baseUrl, [
+        
+        return Cache::remember($cacheKey, now()->addMinutes(5), function () use ($symbol) {
+            try {
+                $response = Http::timeout(5)
+                    ->retry(3, 100)
+                    ->get($this->baseUrl, [
                     'function' => 'GLOBAL_QUOTE',
                     'symbol' => $symbol,
                     'apikey' => $this->apiKey,
@@ -73,7 +67,9 @@ class StockApiService
         
         return Cache::remember($cacheKey, now()->addHours(24), function () use ($symbol, $outputSize) {
             try {
-                $response = Http::get($this->baseUrl, [
+                $response = Http::timeout(10)
+                    ->retry(3, 100)
+                    ->get($this->baseUrl, [
                     'function' => 'TIME_SERIES_DAILY',
                     'symbol' => $symbol,
                     'outputsize' => $outputSize,
@@ -102,7 +98,9 @@ class StockApiService
     public function searchStocks(string $keywords): ?array
     {
         try {
-            $response = Http::get($this->baseUrl, [
+            $response = Http::timeout(5)
+                ->retry(3, 100)
+                ->get($this->baseUrl, [
                 'function' => 'SYMBOL_SEARCH',
                 'keywords' => $keywords,
                 'apikey' => $this->apiKey,
@@ -132,7 +130,9 @@ class StockApiService
         
         return Cache::remember($cacheKey, now()->addDays(7), function () use ($symbol) {
             try {
-                $response = Http::get($this->baseUrl, [
+                $response = Http::timeout(5)
+                    ->retry(3, 100)
+                    ->get($this->baseUrl, [
                     'function' => 'OVERVIEW',
                     'symbol' => $symbol,
                     'apikey' => $this->apiKey,

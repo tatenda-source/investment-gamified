@@ -215,8 +215,44 @@ class PortfolioService
                     'quantity' => $quantity,
                     'exception' => $e->getMessage(),
                 ]);
-                throw $e;
-            }
+
+                // Compute a checksum of the snapshot and store it on the portfolio
+                // row to provide an integrity anchor between the portfolio and
+                // the audit ledger. This field is optional but helpful for quick
+                // verification.
+                $checksum = hash('sha256', $audit->portfolio_snapshot);
+                $portfolio->ledger_checkpoint_id = $audit->id;
+                $portfolio->checksum = $checksum;
+                $portfolio->save();
+
+                // Award XP and check for level up
+                $xpReward = config('game.xp.buy_stock', 10);
+                $lockedUser->experience_points += $xpReward;
+                
+                $levelUpThreshold = $lockedUser->level * config('game.xp.level_up_multiplier', 1000);
+                if ($lockedUser->experience_points >= $levelUpThreshold) {
+                    $lockedUser->level++;
+                    $lockedUser->experience_points = 0; // Or reset to remainder if carrying over
+                }
+                $lockedUser->save();
+
+                return [
+                    'success' => true,
+                    'message' => 'Stock purchased successfully',
+                    'data' => ['xp_earned' => $xpReward],
+                ];
+            });
+
+            return $result;
+        } catch (\Exception $e) {
+            // Catch deadlock or other transaction failures
+            \Log::error('Portfolio buy operation failed', [
+                'user_id' => $user->id,
+                'symbol' => $stockSymbol,
+                'quantity' => $quantity,
+                'exception' => $e->getMessage(),
+            ]);
+            throw $e;
         }
     }
 
@@ -325,21 +361,37 @@ class PortfolioService
                     return ['success' => true, 'message' => 'Stock sold successfully', 'data' => ['proceeds' => $totalRevenue, 'xp_earned' => $xp]];
                 });
 
-                return $result;
-            } catch (\Exception $e) {
-                if ($attempts < 3) {
-                    usleep(rand(50, 200) * 1000);
-                    continue;
+                // Award XP and check for level up
+                $xpReward = config('game.xp.sell_stock', 15);
+                $lockedUser->experience_points += $xpReward;
+                
+                $levelUpThreshold = $lockedUser->level * config('game.xp.level_up_multiplier', 1000);
+                if ($lockedUser->experience_points >= $levelUpThreshold) {
+                    $lockedUser->level++;
+                    $lockedUser->experience_points = 0;
                 }
+                $lockedUser->save();
 
-                \Log::error('Portfolio sell operation failed', [
-                    'user_id' => $user->id,
-                    'symbol' => $stockSymbol,
-                    'quantity' => $quantity,
-                    'exception' => $e->getMessage(),
-                ]);
-                throw $e;
-            }
+                return [
+                    'success' => true,
+                    'message' => 'Stock sold successfully',
+                    'data' => [
+                        'proceeds' => $totalRevenue,
+                        'xp_earned' => $xpReward,
+                    ],
+                ];
+            });
+
+            return $result;
+        } catch (\Exception $e) {
+            // Catch deadlock or other transaction failures
+            \Log::error('Portfolio sell operation failed', [
+                'user_id' => $user->id,
+                'symbol' => $stockSymbol,
+                'quantity' => $quantity,
+                'exception' => $e->getMessage(),
+            ]);
+            throw $e;
         }
     }
 }
