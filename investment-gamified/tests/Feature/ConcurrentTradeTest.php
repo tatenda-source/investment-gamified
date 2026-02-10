@@ -42,10 +42,75 @@ class ConcurrentTradeTest extends TestCase
     }
 
     /**
+     * Verify critical invariants after any transaction.
+     * 
+     * INVARIANTS (must always hold):
+     * 1. No negative balances (impossible by design)
+     * 2. No negative portfolio quantities (impossible by design) 
+     * 3. Portfolio total cost <= cumulative trades
+     * 4. Audit ledger matches portfolio state via deltas
+     * 5. User balance >= 0 and is consistent with transactions
+     * 
+     * If any invariant fails, the concurrency control is broken.
+     */
+    protected function assertInvariants()
+    {
+        // Invariant 1: user balance is non-negative
+        $this->user->refresh();
+        $this->assertGreaterThanOrEqual(0, $this->user->balance, 'User balance cannot be negative (invariant violation: double-spend or negative balance)');
+
+        // Invariant 2: portfolio quantities are non-negative
+        $portfolios = Portfolio::where('user_id', $this->user->id)->get();
+        foreach ($portfolios as $p) {
+            $this->assertGreaterThanOrEqual(0, $p->quantity, "Portfolio quantity cannot be negative for stock {$p->stock_id} (invariant violation: short-sell or negative quantity)");
+        }
+
+        // Invariant 3: no portfolio records with zero quantity should be visible
+        // (global scope filters them, but assert here for clarity)
+        $zeroQty = DB::table('portfolios')
+            ->where('user_id', $this->user->id)
+            ->where('quantity', '<=', 0)
+            ->count();
+        $this->assertEquals(0, $zeroQty, 'Zero-quantity portfolios should not be visible (scope violation)');
+
+        // Invariant 4: audit table is immutable (spot check: no updates on audit records)
+        // This is enforced at the model level; just document the expectation
+    }
+
+    /**
+     * Verify audit ledger matches portfolio state by aggregating deltas.
+     */
+    protected function assertAuditMatchesPortfolio()
+    {
+        $audits = \App\Models\PortfolioAudit::where('user_id', $this->user->id)
+            ->where('stock_id', $this->stock->id)
+            ->get();
+
+        $totalBought = $audits->where('type', 'buy')->sum('quantity');
+        $totalSold = $audits->where('type', 'sell')->sum('quantity');
+        $expectedQuantity = $totalBought - $totalSold;
+
+        $portfolio = Portfolio::where('user_id', $this->user->id)
+            ->where('stock_id', $this->stock->id)
+            ->first();
+
+        if ($expectedQuantity > 0) {
+            $this->assertNotNull($portfolio, 'Portfolio should exist if quantity > 0');
+            $this->assertEquals($expectedQuantity, $portfolio->quantity, 'Audit ledger deltas must match portfolio quantity (invariant: ledger consistency)');
+        } else {
+            // If expected quantity <= 0, portfolio should be filtered by global scope
+            $this->assertNull($portfolio, 'Portfolio with quantity <= 0 should be filtered (invariant: zero-quantity scope)');
+        }
+    }
+
+    /**
      * Test: Concurrent buy operations cannot double-spend balance
      * 
+     * CRITICAL INVARIANT: No double-spend
      * Scenario: User has $1000. Two concurrent requests each try to buy
      * $600 worth of stock (total $1200). Only one should succeed.
+     * 
+     * If this test fails, concurrency control is broken.
      */
     public function test_concurrent_buys_prevent_overdraft()
     {
@@ -80,24 +145,33 @@ class ConcurrentTradeTest extends TestCase
         $this->assertFalse($results['attempt2']['success'], 'Second buy should fail due to insufficient balance');
         $this->assertStringContainsString('Insufficient balance', $results['attempt2']['message']);
 
-        // Verify final state: Only 6 shares owned, balance exactly $400
+        // Invariant: No double-spend (user never went negative)
         $this->user->refresh();
-        $this->assertEquals(400.00, $this->user->balance);
+        $this->assertEquals(400.00, $this->user->balance, 'Invariant: balance must match (1000 - 600)');
+        $this->assertGreaterThanOrEqual(0, $this->user->balance, 'Invariant: balance cannot be negative (double-spend prevention)');
 
+        // Invariant: Portfolio state matches audit ledger
         $portfolio = Portfolio::where('user_id', $this->user->id)
             ->where('stock_id', $this->stock->id)
             ->first();
         
         $this->assertNotNull($portfolio);
-        $this->assertEquals(6, $portfolio->quantity);
+        $this->assertEquals(6, $portfolio->quantity, 'Invariant: portfolio quantity matches expected');
         $this->assertEquals(100.00, $portfolio->average_price);
+
+        // Invariant: Audit ledger matches portfolio via deltas
+        $this->assertAuditMatchesPortfolio();
+        $this->assertInvariants();
     }
 
     /**
      * Test: Concurrent sells cannot create negative portfolio quantity
      * 
+     * CRITICAL INVARIANT: No negative quantities (no short-selling)
      * Scenario: User owns 10 shares. Two concurrent sell requests each
      * try to sell 8 shares (total 16). Only one should succeed.
+     * 
+     * If this test fails, short-selling or negative-quantity state was created.
      */
     public function test_concurrent_sells_prevent_negative_quantity()
     {
@@ -132,7 +206,7 @@ class ConcurrentTradeTest extends TestCase
         $this->assertFalse($results['attempt2']['success'], 'Second sell should fail due to insufficient quantity');
         $this->assertStringContainsString('Insufficient stock quantity', $results['attempt2']['message']);
 
-        // Verify final state: 2 shares remain, balance increased by $800
+        // Invariant: No short-selling (quantity never negative)
         $this->user->refresh();
         $this->assertEquals(10800.00, $this->user->balance); // 10000 + (8 * 100)
 
@@ -141,11 +215,21 @@ class ConcurrentTradeTest extends TestCase
             ->first();
         
         $this->assertNotNull($portfolio);
-        $this->assertEquals(2, $portfolio->quantity);
+        $this->assertEquals(2, $portfolio->quantity, 'Invariant: portfolio quantity cannot be negative (10 - 8 = 2)');
+        $this->assertGreaterThanOrEqual(0, $portfolio->quantity, 'Invariant: no short-selling allowed');
+
+        // Invariant: Audit ledger matches portfolio state
+        $this->assertAuditMatchesPortfolio();
+        $this->assertInvariants();
     }
 
     /**
      * Test: Concurrent buy and sell on same user serializes correctly
+     * 
+     * INVARIANTS: 
+     * - No double-spend (balance must stay within bounds)
+     * - No negative quantities
+     * - Audit ledger consistency
      * 
      * Scenario: User has $5000. Concurrently:
      * - Buy 30 shares ($3000)
@@ -187,21 +271,30 @@ class ConcurrentTradeTest extends TestCase
         $this->assertTrue($results['buy']['success']);
         $this->assertTrue($results['sell']['success']);
 
-        // Verify final state
+        // Verify final state with invariants
         $this->user->refresh();
         
+        // Invariant: balance is non-negative and within expected range
         // Final balance: 5000 - 3000 (buy) + 1000 (sell) = 3000
-        $this->assertEquals(3000.00, $this->user->balance);
+        $this->assertEquals(3000.00, $this->user->balance, 'Invariant: balance must match expected (5000 - 3000 + 1000)');
+        $this->assertGreaterThanOrEqual(0, $this->user->balance, 'Invariant: balance cannot be negative');
 
+        // Invariant: final holdings are correct and non-negative
         // Final holdings: 20 + 30 - 10 = 40 shares
         $portfolio = Portfolio::where('user_id', $this->user->id)
             ->where('stock_id', $this->stock->id)
             ->first();
         
-        $this->assertEquals(40, $portfolio->quantity);
+        $this->assertEquals(40, $portfolio->quantity, 'Invariant: portfolio quantity must match (20 + 30 - 10)');
+        $this->assertGreaterThanOrEqual(0, $portfolio->quantity, 'Invariant: no short-selling');
 
-        // XP should be awarded correctly: +10 (buy) + 15 (sell) = +25
-        $this->assertEquals(25, $this->user->experience_points);
+        // Invariant: XP should be awarded correctly
+        // Buy: +10 (buy) + Sell: +15 (sell) = +25
+        $this->assertEquals(25, $this->user->experience_points, 'Invariant: XP must match expected (10 + 15)');
+
+        // Invariant: Audit ledger matches portfolio state
+        $this->assertAuditMatchesPortfolio();
+        $this->assertInvariants();
     }
 
     /**

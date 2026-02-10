@@ -38,6 +38,31 @@ class AchievementController extends Controller
         ]);
     }
 
+    /**
+     * Get paginated leaderboard ranked by level, experience points, and user ID (tie-breaker).
+     * 
+     * CACHING BEHAVIOR (by design):
+     * - Leaderboard results are cached with TTL from config/cache_ttl.php (default 300s = 5 min)
+     * - Cache invalidated ONLY when a user's XP/level changes (during buy/sell)
+     * - Results may be stale by up to TTL seconds; this is an intentional tradeoff for performance
+     * - Real-time accuracy is NOT a requirement; eventual consistency is acceptable
+     * 
+     * WHY CACHE?
+     * - Full leaderboard query (ORDER BY level DESC, xp DESC) is expensive on large user bases
+     * - Pagination reduces per-request cost but still requires full sort before slice
+     * - Cache prevents thrashing DB with repeated expensive queries
+     * 
+     * CLIENT EXPECTATIONS:
+     * - Rank may be off by a few positions if XP updates occurred in the past seconds
+     * - Refreshes naturally within TTL; no manual cache busting required
+     * - If real-time ranking is critical, client must poll with short intervals
+     * 
+     * OPERATIONS NOTE:
+     * - Monitor cache hit ratio; if <70%, investigate load patterns or reduce TTL
+     * - Cache tags are used for invalidation; tagged flushing requires tag-aware driver (Redis)
+     * 
+     * See: PRODUCTION_SCALE_FIXES_GUIDE.md "Leaderboard Cache Freshness Contract"
+     */
     public function leaderboard()
     {
         $page = max(1, (int) request()->query('page', 1));
