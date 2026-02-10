@@ -10,8 +10,10 @@ use App\Services\ApiQuotaTracker;
 
 class StockApiService
 {
-    protected string $apiKey;
+    protected ?string $apiKey;
     protected string $baseUrl = 'https://www.alphavantage.co/query';
+    protected $circuit;
+    protected $quota;
 
     public function __construct()
     {
@@ -52,9 +54,10 @@ class StockApiService
                 }
 
                 throw new \Exception('AlphaVantage unexpected response');
-            });
-        }, function () use ($stale) {
-            return $stale ?? null;
+            } catch (\Exception $e) {
+                Log::error("Failed to fetch quote for {$symbol}: " . $e->getMessage());
+                return null;
+            }
         });
     }
 
