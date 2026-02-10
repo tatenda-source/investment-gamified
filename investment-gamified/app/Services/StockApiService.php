@@ -5,6 +5,8 @@ namespace App\Services;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use App\Services\CircuitBreaker;
+use App\Services\ApiQuotaTracker;
 
 class StockApiService
 {
@@ -14,6 +16,8 @@ class StockApiService
     public function __construct()
     {
         $this->apiKey = config('services.alphavantage.key');
+        $this->circuit = new CircuitBreaker('alphavantage');
+        $this->quota = new ApiQuotaTracker();
     }
 
     /**
@@ -22,9 +26,17 @@ class StockApiService
     public function getQuote(string $symbol): ?array
     {
         $cacheKey = "stock_quote_{$symbol}";
-        
-        return Cache::remember($cacheKey, now()->addMinutes(5), function () use ($symbol) {
-            try {
+        $stale = Cache::get($cacheKey);
+
+        return $this->circuit->call(function () use ($symbol, $cacheKey) {
+            if (! $this->quota->hasQuota('alphavantage')) {
+                Log::warning('AlphaVantage quota exhausted, returning stale cache if available');
+                return Cache::get($cacheKey);
+            }
+
+            $this->quota->recordRequest('alphavantage');
+
+            return Cache::remember($cacheKey, now()->addMinutes(5), function () use ($symbol) {
                 $response = Http::get($this->baseUrl, [
                     'function' => 'GLOBAL_QUOTE',
                     'symbol' => $symbol,
@@ -33,7 +45,7 @@ class StockApiService
 
                 if ($response->successful()) {
                     $data = $response->json();
-                    
+
                     if (isset($data['Global Quote'])) {
                         $quote = $data['Global Quote'];
                         return [
@@ -44,12 +56,11 @@ class StockApiService
                         ];
                     }
                 }
-                
-                return null;
-            } catch (\Exception $e) {
-                Log::error("Failed to fetch quote for {$symbol}: " . $e->getMessage());
-                return null;
-            }
+
+                throw new \Exception('AlphaVantage unexpected response');
+            });
+        }, function () use ($stale) {
+            return $stale ?? null;
         });
     }
 

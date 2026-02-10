@@ -7,6 +7,8 @@ use App\Models\Stock;
 use App\Models\Transaction;
 use App\Models\PortfolioAudit;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Cache;
 
 class PortfolioService
 {
@@ -38,112 +40,127 @@ class PortfolioService
 
         $totalCost = $stock->current_price * $quantity;
 
-        try {
-            $result = DB::transaction(function () use ($user, $stock, $quantity, $totalCost) {
-                // Acquire pessimistic lock on user row to prevent concurrent balance modifications.
-                // This serializes buy/sell operations per user.
-                $lockedUser = $user::where('id', $user->id)
-                    ->lockForUpdate()
-                    ->first();
+        $xpConfig = Config::get('gamification.xp.buy_reward', 10);
+        $baseXp = Config::get('gamification.level_up.base_xp', 1000);
 
-                // Check balance with locked row
-                if ($lockedUser->balance < $totalCost) {
-                    return ['success' => false, 'message' => 'Insufficient balance'];
-                }
+        $attempts = 0;
+        while ($attempts < 3) {
+            $attempts++;
+            try {
+                $result = DB::transaction(function () use ($user, $stock, $quantity, $totalCost, $xpConfig, $baseXp) {
+                    // Read user row to get current version for optimistic update
+                    $current = DB::table('users')->where('id', $user->id)->first(['id', 'balance', 'experience_points', 'level', 'balance_version']);
+                    if (!$current) {
+                        return ['success' => false, 'message' => 'User not found'];
+                    }
 
-                // Deduct balance on locked row
-                $lockedUser->balance -= $totalCost;
-                $lockedUser->save();
+                    if ($current->balance < $totalCost) {
+                        return ['success' => false, 'message' => 'Insufficient balance'];
+                    }
 
-                // Lock and fetch portfolio entry to prevent concurrent edits
-                $portfolio = Portfolio::where('user_id', $lockedUser->id)
-                    ->where('stock_id', $stock->id)
-                    ->lockForUpdate()
-                    ->first();
+                    $cv = (int) ($current->balance_version ?? 1);
 
-                if ($portfolio === null) {
-                    // Create new portfolio entry if it doesn't exist
-                    $portfolio = new Portfolio([
-                        'user_id' => $lockedUser->id,
+                    // Compute SQL expressions for xp and level rollover using baseXp
+                    $xp = (int) $xpConfig;
+
+                    $levelIncExpr = "CASE WHEN (experience_points + {$xp}) >= (level * {$baseXp}) THEN 1 ELSE 0 END";
+                    $xpNewExpr = "CASE WHEN (experience_points + {$xp}) >= (level * {$baseXp}) THEN (experience_points + {$xp}) - (level * {$baseXp}) ELSE experience_points + {$xp} END";
+
+                    $updated = DB::table('users')
+                        ->where('id', $user->id)
+                        ->where('balance_version', $cv)
+                        ->where('balance', '>=', $totalCost)
+                        ->update([
+                            'balance' => DB::raw("balance - {$totalCost}"),
+                            'experience_points' => DB::raw($xpNewExpr),
+                            'level' => DB::raw("level + ({$levelIncExpr})"),
+                            'balance_version' => DB::raw('balance_version + 1'),
+                        ]);
+
+                    if ($updated === 0) {
+                        // Concurrent modification; let outer loop retry
+                        throw new \Exception('Concurrency conflict updating user balance');
+                    }
+
+                    // Upsert portfolio row for this user/stock
+                    $portfolio = Portfolio::where('user_id', $user->id)
+                        ->where('stock_id', $stock->id)
+                        ->first();
+
+                    if (!$portfolio) {
+                        $portfolio = new Portfolio([
+                            'user_id' => $user->id,
+                            'stock_id' => $stock->id,
+                            'quantity' => 0,
+                            'average_price' => 0,
+                        ]);
+                    }
+
+                    $newQuantity = $portfolio->quantity + $quantity;
+                    $portfolio->average_price = $newQuantity > 0 ? ((($portfolio->average_price * $portfolio->quantity) + $totalCost) / $newQuantity) : 0;
+                    $portfolio->quantity = $newQuantity;
+                    $portfolio->save();
+
+                    // Legacy transaction
+                    Transaction::create([
+                        'user_id' => $user->id,
                         'stock_id' => $stock->id,
-                        'quantity' => 0,
-                        'average_price' => 0,
+                        'type' => 'buy',
+                        'quantity' => $quantity,
+                        'price' => $stock->current_price,
+                        'total_amount' => $totalCost,
                     ]);
+
+                    // Audit (store delta instead of full snapshot to reduce growth)
+                    $audit = PortfolioAudit::create([
+                        'user_id' => $user->id,
+                        'stock_id' => $stock->id,
+                        'type' => 'buy',
+                        'quantity' => $quantity,
+                        'price' => $stock->current_price,
+                        'total_amount' => $totalCost,
+                        'portfolio_snapshot' => json_encode([
+                            'quantity_change' => $quantity,
+                            'average_price_after' => $portfolio->average_price,
+                        ]),
+                    ]);
+
+                    $checksum = hash('sha256', $audit->portfolio_snapshot);
+                    $portfolio->ledger_checkpoint_id = $audit->id;
+                    $portfolio->checksum = $checksum;
+                    $portfolio->save();
+
+                    // Invalidate leaderboard cache because XP changed
+                    try {
+                        Cache::tags(['leaderboard'])->flush();
+                    } catch (\Exception $e) {
+                        // Some cache drivers do not support tags; ignore gracefully
+                        \Log::debug('Cache tags not supported for leaderboard flush');
+                    }
+
+                    return [
+                        'success' => true,
+                        'message' => 'Stock purchased successfully',
+                        'data' => ['xp_earned' => $xp],
+                    ];
+                });
+
+                return $result;
+            } catch (\Exception $e) {
+                // If concurrency conflict try again with exponential backoff
+                if ($attempts < 3) {
+                    usleep(rand(50, 200) * 1000);
+                    continue;
                 }
 
-                $newQuantity = $portfolio->quantity + $quantity;
-                $portfolio->average_price = (($portfolio->average_price * $portfolio->quantity) + $totalCost) / $newQuantity;
-                $portfolio->quantity = $newQuantity;
-                $portfolio->save();
-
-                // Record legacy transaction (backwards compatible)
-                Transaction::create([
-                    'user_id' => $lockedUser->id,
-                    'stock_id' => $stock->id,
-                    'type' => 'buy',
+                \Log::error('Portfolio buy operation failed', [
+                    'user_id' => $user->id,
+                    'symbol' => $stockSymbol,
                     'quantity' => $quantity,
-                    'price' => $stock->current_price,
-                    'total_amount' => $totalCost,
+                    'exception' => $e->getMessage(),
                 ]);
-
-                // --- New: Immutable audit/ledger insertion ---
-                // Build a portfolio snapshot (immutable JSON) representing the
-                // state immediately after this operation. This snapshot is used
-                // for later verification, rebuilds, and checksum calculation.
-                $snapshot = [
-                    'user_id' => $lockedUser->id,
-                    'stock_id' => $stock->id,
-                    'portfolio' => [
-                        'quantity' => $portfolio->quantity,
-                        'average_price' => $portfolio->average_price,
-                    ],
-                    'user_balance' => $lockedUser->balance,
-                ];
-
-                $audit = PortfolioAudit::create([
-                    'user_id' => $lockedUser->id,
-                    'stock_id' => $stock->id,
-                    'type' => 'buy',
-                    'quantity' => $quantity,
-                    'price' => $stock->current_price,
-                    'total_amount' => $totalCost,
-                    'portfolio_snapshot' => json_encode($snapshot),
-                ]);
-
-                // Compute a checksum of the snapshot and store it on the portfolio
-                // row to provide an integrity anchor between the portfolio and
-                // the audit ledger. This field is optional but helpful for quick
-                // verification.
-                $checksum = hash('sha256', $audit->portfolio_snapshot);
-                $portfolio->ledger_checkpoint_id = $audit->id;
-                $portfolio->checksum = $checksum;
-                $portfolio->save();
-
-                // Award XP and check for level up
-                $lockedUser->experience_points += 10;
-                if ($lockedUser->experience_points >= $lockedUser->level * 1000) {
-                    $lockedUser->level++;
-                    $lockedUser->experience_points = 0;
-                }
-                $lockedUser->save();
-
-                return [
-                    'success' => true,
-                    'message' => 'Stock purchased successfully',
-                    'data' => ['xp_earned' => 10],
-                ];
-            });
-
-            return $result;
-        } catch (\Exception $e) {
-            // Catch deadlock or other transaction failures
-            \Log::error('Portfolio buy operation failed', [
-                'user_id' => $user->id,
-                'symbol' => $stockSymbol,
-                'quantity' => $quantity,
-                'exception' => $e->getMessage(),
-            ]);
-            throw $e;
+                throw $e;
+            }
         }
     }
 
@@ -173,107 +190,100 @@ class PortfolioService
             return ['success' => false, 'message' => 'Stock not found'];
         }
 
-        try {
-            $result = DB::transaction(function () use ($user, $stock, $quantity) {
-                // Acquire pessimistic lock on user row
-                $lockedUser = $user::where('id', $user->id)
-                    ->lockForUpdate()
-                    ->first();
+        $xpConfig = Config::get('gamification.xp.sell_reward', 15);
+        $baseXp = Config::get('gamification.level_up.base_xp', 1000);
 
-                // Lock and fetch portfolio entry
-                $portfolio = Portfolio::where('user_id', $lockedUser->id)
-                    ->where('stock_id', $stock->id)
-                    ->lockForUpdate()
-                    ->first();
+        $attempts = 0;
+        while ($attempts < 3) {
+            $attempts++;
+            try {
+                $result = DB::transaction(function () use ($user, $stock, $quantity, $xpConfig, $baseXp) {
+                    $portfolio = Portfolio::where('user_id', $user->id)
+                        ->where('stock_id', $stock->id)
+                        ->first();
 
-                // Validate ownership and quantity
-                if (!$portfolio || $portfolio->quantity < $quantity) {
-                    return ['success' => false, 'message' => 'Insufficient stock quantity'];
+                    if (!$portfolio || $portfolio->quantity < $quantity) {
+                        return ['success' => false, 'message' => 'Insufficient stock quantity'];
+                    }
+
+                    $totalRevenue = $stock->current_price * $quantity;
+
+                    // Update user atomically: increment balance and xp, bump level if threshold hit
+                    $current = DB::table('users')->where('id', $user->id)->first(['balance_version', 'experience_points', 'level']);
+                    $cv = (int) ($current->balance_version ?? 1);
+                    $xp = (int) $xpConfig;
+
+                    $levelIncExpr = "CASE WHEN (experience_points + {$xp}) >= (level * {$baseXp}) THEN 1 ELSE 0 END";
+                    $xpNewExpr = "CASE WHEN (experience_points + {$xp}) >= (level * {$baseXp}) THEN (experience_points + {$xp}) - (level * {$baseXp}) ELSE experience_points + {$xp} END";
+
+                    $updated = DB::table('users')
+                        ->where('id', $user->id)
+                        ->where('balance_version', $cv)
+                        ->update([
+                            'balance' => DB::raw("balance + {$totalRevenue}"),
+                            'experience_points' => DB::raw($xpNewExpr),
+                            'level' => DB::raw("level + ({$levelIncExpr})"),
+                            'balance_version' => DB::raw('balance_version + 1'),
+                        ]);
+
+                    if ($updated === 0) {
+                        throw new \Exception('Concurrency conflict updating user balance');
+                    }
+
+                    // update portfolio quantity
+                    $portfolio->quantity -= $quantity;
+                    if ($portfolio->quantity < 0) {
+                        return ['success' => false, 'message' => 'Insufficient stock quantity'];
+                    }
+                    $portfolio->save();
+
+                    Transaction::create([
+                        'user_id' => $user->id,
+                        'stock_id' => $stock->id,
+                        'type' => 'sell',
+                        'quantity' => $quantity,
+                        'price' => $stock->current_price,
+                        'total_amount' => $totalRevenue,
+                    ]);
+
+                    $audit = PortfolioAudit::create([
+                        'user_id' => $user->id,
+                        'stock_id' => $stock->id,
+                        'type' => 'sell',
+                        'quantity' => $quantity,
+                        'price' => $stock->current_price,
+                        'total_amount' => $totalRevenue,
+                        'portfolio_snapshot' => json_encode(['quantity_change' => -$quantity, 'average_price_after' => $portfolio->average_price]),
+                    ]);
+
+                    $portfolio->ledger_checkpoint_id = $audit->id;
+                    $portfolio->checksum = hash('sha256', $audit->portfolio_snapshot);
+                    $portfolio->save();
+
+                    try {
+                        Cache::tags(['leaderboard'])->flush();
+                    } catch (\Exception $e) {
+                        \Log::debug('Cache tags not supported for leaderboard flush');
+                    }
+
+                    return ['success' => true, 'message' => 'Stock sold successfully', 'data' => ['proceeds' => $totalRevenue, 'xp_earned' => $xp]];
+                });
+
+                return $result;
+            } catch (\Exception $e) {
+                if ($attempts < 3) {
+                    usleep(rand(50, 200) * 1000);
+                    continue;
                 }
 
-                $totalRevenue = $stock->current_price * $quantity;
-
-                // Add proceeds to balance on locked row
-                $lockedUser->balance += $totalRevenue;
-                $lockedUser->save();
-
-                // Update portfolio quantity on locked row. To keep a persistent
-                // audit trail and to allow checksum/checkpointing we prefer to
-                // keep portfolio rows (even with zero quantity) rather than
-                // deleting them. This preserves the `ledger_checkpoint_id`
-                // linkage and helps with rebuilds.
-                $portfolio->quantity -= $quantity;
-                if ($portfolio->quantity < 0) {
-                    // Defensive: should not happen due to earlier check
-                    return ['success' => false, 'message' => 'Insufficient stock quantity'];
-                }
-                // Persist zero quantities (do not delete)
-                $portfolio->save();
-
-                // Record legacy transaction (backwards compatible)
-                Transaction::create([
-                    'user_id' => $lockedUser->id,
-                    'stock_id' => $stock->id,
-                    'type' => 'sell',
+                \Log::error('Portfolio sell operation failed', [
+                    'user_id' => $user->id,
+                    'symbol' => $stockSymbol,
                     'quantity' => $quantity,
-                    'price' => $stock->current_price,
-                    'total_amount' => $totalRevenue,
+                    'exception' => $e->getMessage(),
                 ]);
-
-                // --- New: Immutable audit/ledger insertion ---
-                $snapshot = [
-                    'user_id' => $lockedUser->id,
-                    'stock_id' => $stock->id,
-                    'portfolio' => [
-                        'quantity' => $portfolio->quantity,
-                        'average_price' => $portfolio->average_price,
-                    ],
-                    'user_balance' => $lockedUser->balance,
-                ];
-
-                $audit = PortfolioAudit::create([
-                    'user_id' => $lockedUser->id,
-                    'stock_id' => $stock->id,
-                    'type' => 'sell',
-                    'quantity' => $quantity,
-                    'price' => $stock->current_price,
-                    'total_amount' => $totalRevenue,
-                    'portfolio_snapshot' => json_encode($snapshot),
-                ]);
-
-                $checksum = hash('sha256', $audit->portfolio_snapshot);
-                $portfolio->ledger_checkpoint_id = $audit->id;
-                $portfolio->checksum = $checksum;
-                $portfolio->save();
-
-                // Award XP and check for level up
-                $lockedUser->experience_points += 15;
-                if ($lockedUser->experience_points >= $lockedUser->level * 1000) {
-                    $lockedUser->level++;
-                    $lockedUser->experience_points = 0;
-                }
-                $lockedUser->save();
-
-                return [
-                    'success' => true,
-                    'message' => 'Stock sold successfully',
-                    'data' => [
-                        'proceeds' => $totalRevenue,
-                        'xp_earned' => 15,
-                    ],
-                ];
-            });
-
-            return $result;
-        } catch (\Exception $e) {
-            // Catch deadlock or other transaction failures
-            \Log::error('Portfolio sell operation failed', [
-                'user_id' => $user->id,
-                'symbol' => $stockSymbol,
-                'quantity' => $quantity,
-                'exception' => $e->getMessage(),
-            ]);
-            throw $e;
+                throw $e;
+            }
         }
     }
 }

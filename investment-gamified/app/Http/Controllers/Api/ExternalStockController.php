@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Services\StockApiService;
 use App\Services\FinancialModelingPrepService;
+use App\Models\Stock;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Http\Request;
 
 class ExternalStockController extends Controller
@@ -23,6 +25,18 @@ class ExternalStockController extends Controller
      */
     public function quote(Request $request, string $symbol)
     {
+        $symbol = strtoupper(trim($symbol));
+
+        // Validate symbol format early
+        if (! preg_match('/^[A-Z0-9\.\-]{1,8}$/', $symbol)) {
+            return response()->json(['success' => false, 'message' => 'Invalid stock symbol format'], 422);
+        }
+
+        // Ensure symbol exists in our stocks table to prevent abuse
+        if (! Stock::where('symbol', $symbol)->exists()) {
+            return response()->json(['success' => false, 'message' => 'Symbol not available for trading'], 404);
+        }
+
         $source = strtolower($request->query('source', 'alphavantage'));
 
         try {

@@ -13,6 +13,24 @@ class PortfolioAudit extends Model
 
     public $timestamps = true; // uses created_at
 
-    // Immutable ledger: we do not provide any mutators here. Also
-    // migrations create DB-level triggers to prevent UPDATE/DELETE.
+    // Immutable ledger: prevent accidental updates/deletes at application level.
+    public function update(array $attributes = [], array $options = [])
+    {
+        throw new \Exception('PortfolioAudit is immutable and cannot be updated');
+    }
+
+    public function delete()
+    {
+        throw new \Exception('PortfolioAudit is immutable and cannot be deleted');
+    }
+
+    public static function query()
+    {
+        $query = parent::query();
+        // Block mass updates through query builder on this model
+        $query->macro('update', function () {
+            throw new \Exception('Mass updates are not allowed on PortfolioAudit');
+        });
+        return $query;
+    }
 }
