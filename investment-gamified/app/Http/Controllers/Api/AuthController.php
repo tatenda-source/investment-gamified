@@ -34,7 +34,14 @@ class AuthController extends Controller
 
     public function login(\App\Http\Requests\Auth\LoginRequest $request)
     {
-        $request->validated();
+        \Log::info('Login attempt', ['request' => $request->all()]);
+        
+        try {
+            $request->validated();
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            \Log::error('Login validation failed', ['errors' => $e->errors()]);
+            throw $e;
+        }
 
         $user = User::where('email', $request->email)->first();
 

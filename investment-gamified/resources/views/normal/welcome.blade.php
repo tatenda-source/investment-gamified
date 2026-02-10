@@ -4,8 +4,7 @@
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Kid Investment Game</title>
-	{{-- Tailwind CSS CDN - loaded synchronously to ensure styles apply immediately --}}
-	<script src="https://cdn.tailwindcss.com"></script>
+	@vite(['resources/css/app.css', 'resources/js/app.js'])
 	{{-- Allow JS to read the app URL for API calls --}}
 	<meta name="app-url" content="{{ url('/') }}">
 </head>
