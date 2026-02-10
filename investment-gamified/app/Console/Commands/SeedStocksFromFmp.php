@@ -1,4 +1,3 @@
-
 <?php
 // app/Console/Commands/SeedStocksFromFmp.php
 namespace App\Console\Commands;
