@@ -7,6 +7,20 @@ use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
+/**
+ * User model for the investment-gamified system.
+ * 
+ * CRITICAL: All persisted monetary values use DECIMAL(10,2) casting at the DB layer.
+ * PHP Eloquent casts balance to 'decimal:2' automatically.
+ * 
+ * MONEY HANDLING RULE:
+ * - balance: always a Decimal object (via Eloquent cast), NEVER a PHP float
+ * - Never perform balance mutations outside PortfolioService.buyStock()/sellStock()
+ * - All balance arithmetic must occur in SQL (DB::raw expressions) to preserve precision
+ * - Client-side calculations must use standard financial precision (scale=2)
+ * 
+ * See: PRODUCTION_SCALE_FIXES_GUIDE.md "Explicit Money Representation Contract"
+ */
 class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable;
@@ -55,6 +69,16 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
+/**
+ * Stock model representing a tradable security.
+ * 
+ * MONEY HANDLING CONTRACT:
+ * - current_price: always Decimal(10,2) via Eloquent cast, NEVER float
+ * - Prices fetched from external APIs are validated and cast to DECIMAL before storage
+ * - Multiplication with quantity (e.g., price * quantity) must happen in SQL for precision
+ * 
+ * See: PRODUCTION_SCALE_FIXES_GUIDE.md "Explicit Money Representation Contract"
+ */
 class Stock extends Model
 {
     protected $fillable = [

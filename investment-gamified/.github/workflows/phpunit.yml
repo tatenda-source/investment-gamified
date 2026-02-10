@@ -1,0 +1,56 @@
+name: Run PHPUnit
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: [ '8.1', '8.2' ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring, bcmath, xml, sqlite, pdo_sqlite
+          coverage: none
+
+      - name: Get composer cache
+        id: composer-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Install dependencies
+        run: composer install --no-progress --prefer-dist --no-interaction
+
+      - name: Prepare SQLite DB
+        run: |
+          mkdir -p database
+          touch database/testing.sqlite
+          php artisan key:generate --ansi || true
+        env:
+          APP_ENV: testing
+
+      - name: Set environment for tests
+        run: |
+          echo "DB_CONNECTION=sqlite" >> $GITHUB_ENV
+          echo "DB_DATABASE=database/testing.sqlite" >> $GITHUB_ENV
+          echo "APP_ENV=testing" >> $GITHUB_ENV
+
+      - name: Run migrations
+        run: php artisan migrate --force
+
+      - name: Run tests
+        run: vendor/bin/phpunit --configuration phpunit.xml --colors=never

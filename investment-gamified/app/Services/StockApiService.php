@@ -5,6 +5,8 @@ namespace App\Services;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use App\Services\CircuitBreaker;
+use App\Services\ApiQuotaTracker;
 
 class StockApiService
 {
@@ -14,6 +16,8 @@ class StockApiService
     public function __construct()
     {
         $this->apiKey = config('services.alphavantage.key');
+        $this->circuit = new CircuitBreaker('alphavantage');
+        $this->quota = new ApiQuotaTracker();
     }
 
     /**
@@ -35,7 +39,7 @@ class StockApiService
 
                 if ($response->successful()) {
                     $data = $response->json();
-                    
+
                     if (isset($data['Global Quote'])) {
                         $quote = $data['Global Quote'];
                         return [
@@ -46,12 +50,11 @@ class StockApiService
                         ];
                     }
                 }
-                
-                return null;
-            } catch (\Exception $e) {
-                Log::error("Failed to fetch quote for {$symbol}: " . $e->getMessage());
-                return null;
-            }
+
+                throw new \Exception('AlphaVantage unexpected response');
+            });
+        }, function () use ($stale) {
+            return $stale ?? null;
         });
     }
 
