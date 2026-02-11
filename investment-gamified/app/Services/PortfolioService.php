@@ -1,15 +1,24 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services;
 
 use App\Models\Portfolio;
+use App\Models\PortfolioAudit;
 use App\Models\Stock;
 use App\Models\Transaction;
-use App\Models\PortfolioAudit;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class PortfolioService
 {
+    private const ERROR_INVALID_QUANTITY = 'Quantity must be greater than zero';
+    private const ERROR_STOCK_NOT_FOUND = 'Stock not found';
+    private const ERROR_INSUFFICIENT_BALANCE = 'Insufficient balance';
+    private const ERROR_INSUFFICIENT_STOCK = 'Insufficient stock quantity';
+
     /**
      * Handle buying stocks for a user with pessimistic locking.
      * 
@@ -24,16 +33,15 @@ class PortfolioService
      * @param  int               $quantity
      * @return array
      */
-    public function buyStock($user, string $stockSymbol, int $quantity): array
+    public function buyStock(User $user, string $stockSymbol, int $quantity): array
     {
-        // Guard against invalid quantities
         if ($quantity <= 0) {
-            return ['success' => false, 'message' => 'Quantity must be greater than zero'];
+            return $this->errorResponse(self::ERROR_INVALID_QUANTITY);
         }
 
-        $stock = Stock::where('symbol', $stockSymbol)->first();
-        if (!$stock) {
-            return ['success' => false, 'message' => 'Stock not found'];
+        $stock = $this->findStockBySymbol($stockSymbol);
+        if ($stock === null) {
+            return $this->errorResponse(self::ERROR_STOCK_NOT_FOUND);
         }
 
         $totalCost = $stock->current_price * $quantity;
@@ -42,13 +50,13 @@ class PortfolioService
             $result = DB::transaction(function () use ($user, $stock, $quantity, $totalCost) {
                 // Acquire pessimistic lock on user row to prevent concurrent balance modifications.
                 // This serializes buy/sell operations per user.
-                $lockedUser = $user::where('id', $user->id)
+                $lockedUser = User::where('id', $user->id)
                     ->lockForUpdate()
                     ->first();
 
                 // Check balance with locked row
                 if ($lockedUser->balance < $totalCost) {
-                    return ['success' => false, 'message' => 'Insufficient balance'];
+                    return $this->errorResponse(self::ERROR_INSUFFICIENT_BALANCE);
                 }
 
                 // Deduct balance on locked row
@@ -86,49 +94,19 @@ class PortfolioService
                     'total_amount' => $totalCost,
                 ]);
 
-                // --- New: Immutable audit/ledger insertion ---
-                // Build a portfolio snapshot (immutable JSON) representing the
-                // state immediately after this operation. This snapshot is used
-                // for later verification, rebuilds, and checksum calculation.
-                $snapshot = [
-                    'user_id' => $lockedUser->id,
-                    'stock_id' => $stock->id,
-                    'portfolio' => [
-                        'quantity' => $portfolio->quantity,
-                        'average_price' => $portfolio->average_price,
-                    ],
-                    'user_balance' => $lockedUser->balance,
-                ];
-
-                $audit = PortfolioAudit::create([
-                    'user_id' => $lockedUser->id,
-                    'stock_id' => $stock->id,
-                    'type' => 'buy',
-                    'quantity' => $quantity,
-                    'price' => $stock->current_price,
-                    'total_amount' => $totalCost,
-                    'portfolio_snapshot' => json_encode($snapshot),
-                ]);
-
-                // Compute a checksum of the snapshot and store it on the portfolio
-                // row to provide an integrity anchor between the portfolio and
-                // the audit ledger. This field is optional but helpful for quick
-                // verification.
-                $checksum = hash('sha256', $audit->portfolio_snapshot);
-                $portfolio->ledger_checkpoint_id = $audit->id;
-                $portfolio->checksum = $checksum;
-                $portfolio->save();
+                $this->createAuditAndCheckpoint(
+                    $lockedUser,
+                    $stock,
+                    $portfolio,
+                    'buy',
+                    $quantity,
+                    $stock->current_price,
+                    $totalCost,
+                );
 
                 // Award XP and check for level up
                 $xpReward = config('game.xp.buy_stock', 10);
-                $lockedUser->experience_points += $xpReward;
-                
-                $levelUpThreshold = $lockedUser->level * config('game.xp.level_up_multiplier', 1000);
-                if ($lockedUser->experience_points >= $levelUpThreshold) {
-                    $lockedUser->level++;
-                    $lockedUser->experience_points = 0; // Or reset to remainder if carrying over
-                }
-                $lockedUser->save();
+                $this->applyXpReward($lockedUser, $xpReward);
 
                 return [
                     'success' => true,
@@ -139,8 +117,7 @@ class PortfolioService
 
             return $result;
         } catch (\Exception $e) {
-            // Catch deadlock or other transaction failures
-            \Log::error('Portfolio buy operation failed', [
+            Log::error('Portfolio buy operation failed', [
                 'user_id' => $user->id,
                 'symbol' => $stockSymbol,
                 'quantity' => $quantity,
@@ -164,22 +141,21 @@ class PortfolioService
      * @param  int               $quantity
      * @return array
      */
-    public function sellStock($user, string $stockSymbol, int $quantity): array
+    public function sellStock(User $user, string $stockSymbol, int $quantity): array
     {
-        // Guard against invalid quantities
         if ($quantity <= 0) {
-            return ['success' => false, 'message' => 'Quantity must be greater than zero'];
+            return $this->errorResponse(self::ERROR_INVALID_QUANTITY);
         }
 
-        $stock = Stock::where('symbol', $stockSymbol)->first();
-        if (!$stock) {
-            return ['success' => false, 'message' => 'Stock not found'];
+        $stock = $this->findStockBySymbol($stockSymbol);
+        if ($stock === null) {
+            return $this->errorResponse(self::ERROR_STOCK_NOT_FOUND);
         }
 
         try {
             $result = DB::transaction(function () use ($user, $stock, $quantity) {
                 // Acquire pessimistic lock on user row
-                $lockedUser = $user::where('id', $user->id)
+                $lockedUser = User::where('id', $user->id)
                     ->lockForUpdate()
                     ->first();
 
@@ -191,7 +167,7 @@ class PortfolioService
 
                 // Validate ownership and quantity
                 if (!$portfolio || $portfolio->quantity < $quantity) {
-                    return ['success' => false, 'message' => 'Insufficient stock quantity'];
+                    return $this->errorResponse(self::ERROR_INSUFFICIENT_STOCK);
                 }
 
                 $totalRevenue = $stock->current_price * $quantity;
@@ -207,8 +183,7 @@ class PortfolioService
                 // linkage and helps with rebuilds.
                 $portfolio->quantity -= $quantity;
                 if ($portfolio->quantity < 0) {
-                    // Defensive: should not happen due to earlier check
-                    return ['success' => false, 'message' => 'Insufficient stock quantity'];
+                    return $this->errorResponse(self::ERROR_INSUFFICIENT_STOCK);
                 }
                 // Persist zero quantities (do not delete)
                 $portfolio->save();
@@ -223,42 +198,19 @@ class PortfolioService
                     'total_amount' => $totalRevenue,
                 ]);
 
-                // --- New: Immutable audit/ledger insertion ---
-                $snapshot = [
-                    'user_id' => $lockedUser->id,
-                    'stock_id' => $stock->id,
-                    'portfolio' => [
-                        'quantity' => $portfolio->quantity,
-                        'average_price' => $portfolio->average_price,
-                    ],
-                    'user_balance' => $lockedUser->balance,
-                ];
-
-                $audit = PortfolioAudit::create([
-                    'user_id' => $lockedUser->id,
-                    'stock_id' => $stock->id,
-                    'type' => 'sell',
-                    'quantity' => $quantity,
-                    'price' => $stock->current_price,
-                    'total_amount' => $totalRevenue,
-                    'portfolio_snapshot' => json_encode($snapshot),
-                ]);
-
-                $checksum = hash('sha256', $audit->portfolio_snapshot);
-                $portfolio->ledger_checkpoint_id = $audit->id;
-                $portfolio->checksum = $checksum;
-                $portfolio->save();
+                $this->createAuditAndCheckpoint(
+                    $lockedUser,
+                    $stock,
+                    $portfolio,
+                    'sell',
+                    $quantity,
+                    $stock->current_price,
+                    $totalRevenue,
+                );
 
                 // Award XP and check for level up
                 $xpReward = config('game.xp.sell_stock', 15);
-                $lockedUser->experience_points += $xpReward;
-                
-                $levelUpThreshold = $lockedUser->level * config('game.xp.level_up_multiplier', 1000);
-                if ($lockedUser->experience_points >= $levelUpThreshold) {
-                    $lockedUser->level++;
-                    $lockedUser->experience_points = 0;
-                }
-                $lockedUser->save();
+                $this->applyXpReward($lockedUser, $xpReward);
 
                 return [
                     'success' => true,
@@ -272,8 +224,7 @@ class PortfolioService
 
             return $result;
         } catch (\Exception $e) {
-            // Catch deadlock or other transaction failures
-            \Log::error('Portfolio sell operation failed', [
+            Log::error('Portfolio sell operation failed', [
                 'user_id' => $user->id,
                 'symbol' => $stockSymbol,
                 'quantity' => $quantity,
@@ -281,5 +232,62 @@ class PortfolioService
             ]);
             throw $e;
         }
+    }
+
+    private function findStockBySymbol(string $stockSymbol): ?Stock
+    {
+        return Stock::where('symbol', $stockSymbol)->first();
+    }
+
+    private function errorResponse(string $message): array
+    {
+        return ['success' => false, 'message' => $message];
+    }
+
+    private function createAuditAndCheckpoint(
+        User $user,
+        Stock $stock,
+        Portfolio $portfolio,
+        string $type,
+        int $quantity,
+        float $price,
+        float $totalAmount,
+    ): void {
+        $snapshot = [
+            'user_id' => $user->id,
+            'stock_id' => $stock->id,
+            'portfolio' => [
+                'quantity' => $portfolio->quantity,
+                'average_price' => $portfolio->average_price,
+            ],
+            'user_balance' => $user->balance,
+        ];
+
+        $audit = PortfolioAudit::create([
+            'user_id' => $user->id,
+            'stock_id' => $stock->id,
+            'type' => $type,
+            'quantity' => $quantity,
+            'price' => $price,
+            'total_amount' => $totalAmount,
+            'portfolio_snapshot' => json_encode($snapshot),
+        ]);
+
+        $portfolio->ledger_checkpoint_id = $audit->id;
+        $portfolio->checksum = hash('sha256', $audit->portfolio_snapshot);
+        $portfolio->save();
+    }
+
+    private function applyXpReward(User $user, int $xpReward): void
+    {
+        $user->experience_points += $xpReward;
+
+        $levelUpThreshold = $user->level * config('game.xp.level_up_multiplier', 1000);
+        if ($user->experience_points >= $levelUpThreshold) {
+            $user->level++;
+            $user->experience_points = 0;
+        }
+
+        $user->save();
     }
 }

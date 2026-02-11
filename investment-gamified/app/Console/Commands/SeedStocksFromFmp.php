@@ -1,21 +1,22 @@
 <?php
-// app/Console/Commands/SeedStocksFromFmp.php
+
+declare(strict_types=1);
+
 namespace App\Console\Commands;
 
-use Illuminate\Console\Command;
 use App\Models\Stock;
 use App\Services\FinancialModelingPrepService;
+use Illuminate\Console\Command;
 
 class SeedStocksFromFmp extends Command
 {
     protected $signature = 'stocks:seed-fmp';
     protected $description = 'Seed stocks database from Financial Modeling Prep API';
 
-    public function handle(FinancialModelingPrepService $fmp)
+    public function handle(FinancialModelingPrepService $fmp): int
     {
         $this->info('Starting to seed stocks from FMP...');
 
-        // Kid-friendly popular stocks
         $popularSymbols = [
             'AAPL' => ['category' => 'Tech', 'description' => 'Apple makes iPhones, iPads, and Mac computers'],
             'MSFT' => ['category' => 'Tech', 'description' => 'Microsoft makes Xbox, Windows, and Office'],
@@ -36,20 +37,18 @@ class SeedStocksFromFmp extends Command
 
         foreach ($popularSymbols as $symbol => $info) {
             $this->info("Fetching data for {$symbol}...");
-            
+
             try {
-                // Get quote data
                 $quote = $fmp->getQuote($symbol);
-                
+
                 if (!$quote) {
                     $this->error("Failed to fetch quote for {$symbol}");
                     $errorCount++;
                     continue;
                 }
 
-                // Get profile data
                 $profile = $fmp->getCompanyProfile($symbol);
-                
+
                 $stock = Stock::updateOrCreate(
                     ['symbol' => $symbol],
                     [
@@ -61,15 +60,12 @@ class SeedStocksFromFmp extends Command
                         'change_percentage' => $quote['change_percent'] ?? 0,
                         'logo_url' => $profile['image'] ?? null,
                         'fun_fact' => $this->generateFunFact($symbol),
-                    ]
+                    ],
                 );
 
                 $this->info("✓ Successfully imported {$symbol} - {$stock->name}");
                 $successCount++;
-                
-                // Rate limiting - FMP free tier allows 250 requests per day
                 sleep(1);
-                
             } catch (\Exception $e) {
                 $this->error("Error importing {$symbol}: " . $e->getMessage());
                 $errorCount++;
@@ -77,14 +73,17 @@ class SeedStocksFromFmp extends Command
         }
 
         $this->newLine();
-        $this->info("Import completed!");
+        $this->info('Import completed!');
         $this->info("Successfully imported: {$successCount} stocks");
+
         if ($errorCount > 0) {
             $this->warn("Failed to import: {$errorCount} stocks");
         }
+
+        return self::SUCCESS;
     }
 
-    private function generateFunFact($symbol): ?string
+    private function generateFunFact(string $symbol): ?string
     {
         $facts = [
             'AAPL' => 'Apple was started in a garage in 1976!',
