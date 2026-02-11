@@ -1,22 +1,20 @@
 <?php
-// app/Services/FinancialModelingPrepService.php
+
+declare(strict_types=1);
+
 namespace App\Services;
 
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use App\Services\CircuitBreaker;
 use App\Services\ApiQuotaTracker;
 
-/**
- * Financial Modeling Prep API Service
- * Free tier: 250 requests per day
- * NOTE: The free tier does NOT support /quote/{symbol}, only /quote-short/{symbol}
- */
 class FinancialModelingPrepService
 {
-    protected string $apiKey;
-    protected string $baseUrl = 'https://financialmodelingprep.com/api/v3';
+    private const BASE_URL = 'https://financialmodelingprep.com/api/v3';
+
+    private string $apiKey;
 
     public function __construct()
     {
@@ -25,9 +23,6 @@ class FinancialModelingPrepService
         $this->quota = new ApiQuotaTracker();
     }
 
-    /**
-     * Get real-time stock quote (FREE TIER - v3 /quote/ endpoint)
-     */
     public function getQuote(string $symbol): ?array
     {
         $cacheKey = "fmp_quote_{$symbol}";
@@ -60,11 +55,12 @@ class FinancialModelingPrepService
 
                     if (!empty($data) && isset($data[0])) {
                         $quote = $data[0];
+
                         return [
-                            'symbol'   => $quote['symbol'] ?? null,
-                            'price'    => $quote['price'] ?? null,
-                            'volume'   => $quote['volume'] ?? null,
-                            'change'   => $quote['change'] ?? null,
+                            'symbol' => $quote['symbol'] ?? null,
+                            'price' => $quote['price'] ?? null,
+                            'volume' => $quote['volume'] ?? null,
+                            'change' => $quote['change'] ?? null,
                             'changesPercentage' => $quote['changesPercentage'] ?? null,
                         ];
                     }
@@ -77,17 +73,13 @@ class FinancialModelingPrepService
         });
     }
 
-    /**
-     * Get company profile (FREE TIER - v3 API)
-     */
     public function getCompanyProfile(string $symbol): ?array
     {
         $cacheKey = "fmp_profile_{$symbol}";
-        
-        return Cache::remember($cacheKey, now()->addDays(7), function () use ($symbol) {
+
+        return Cache::remember($cacheKey, now()->addDays(7), function () use ($symbol): ?array {
             try {
-                // v3 API endpoint
-                $response = Http::timeout(10)->get("{$this->baseUrl}/profile/{$symbol}", [
+                $response = Http::timeout(10)->get(self::BASE_URL . "/profile/{$symbol}", [
                     'apikey' => $this->apiKey,
                 ]);
 
@@ -95,13 +87,11 @@ class FinancialModelingPrepService
 
                 if ($response->successful()) {
                     $data = $response->json();
-                    
-                    // Check for error message
-                    if (isset($data['Error Message'])) {
-                        Log::error("FMP API Error for profile {$symbol}: " . $data['Error Message']);
+
+                    if ($this->hasApiError($data, "profile {$symbol}")) {
                         return null;
                     }
-                    
+
                     if (!empty($data) && isset($data[0])) {
                         return $data[0];
                     }
@@ -110,27 +100,24 @@ class FinancialModelingPrepService
                 return null;
             } catch (\Exception $e) {
                 Log::error("FMP ERROR (profile {$symbol}): " . $e->getMessage());
+
                 return null;
             }
         });
     }
 
-    /**
-     * Get historical prices (FREE TIER - v3 API)
-     */
     public function getHistoricalPrices(string $symbol, int $days = 30): ?array
     {
         $cacheKey = "fmp_history_{$symbol}_{$days}";
-        
-        return Cache::remember($cacheKey, now()->addHours(24), function () use ($symbol, $days) {
+
+        return Cache::remember($cacheKey, now()->addHours(24), function () use ($symbol, $days): ?array {
             try {
                 $from = now()->subDays($days)->format('Y-m-d');
                 $to = now()->format('Y-m-d');
-                
-                // v3 API endpoint - use historical-price-full
-                $response = Http::timeout(10)->get("{$this->baseUrl}/historical-price-full/{$symbol}", [
-                    'from'   => $from,
-                    'to'     => $to,
+
+                $response = Http::timeout(10)->get(self::BASE_URL . "/historical-price-full/{$symbol}", [
+                    'from' => $from,
+                    'to' => $to,
                     'apikey' => $this->apiKey,
                 ]);
 
@@ -139,9 +126,7 @@ class FinancialModelingPrepService
                 if ($response->successful()) {
                     $data = $response->json();
 
-                    // Check for error message
-                    if (isset($data['Error Message'])) {
-                        Log::error("FMP API Error for history {$symbol}: " . $data['Error Message']);
+                    if ($this->hasApiError($data, "history {$symbol}")) {
                         return null;
                     }
 
@@ -153,20 +138,18 @@ class FinancialModelingPrepService
                 return null;
             } catch (\Exception $e) {
                 Log::error("FMP ERROR (history {$symbol}): " . $e->getMessage());
+
                 return null;
             }
         });
     }
 
-    /**
-     * Search stocks (v4 API)
-     */
     public function searchStocks(string $query): ?array
     {
         try {
-            $response = Http::timeout(10)->get("{$this->baseUrl}/search", [
-                'query'  => $query,
-                'limit'  => 10,
+            $response = Http::timeout(10)->get(self::BASE_URL . '/search', [
+                'query' => $query,
+                'limit' => 10,
                 'apikey' => $this->apiKey,
             ]);
 
@@ -174,37 +157,33 @@ class FinancialModelingPrepService
 
             if ($response->successful()) {
                 $data = $response->json();
-                
-                // Check for error message
-                if (isset($data['Error Message'])) {
-                    Log::error("FMP API Error for search {$query}: " . $data['Error Message']);
+
+                if ($this->hasApiError($data, "search {$query}")) {
                     return null;
                 }
-                
+
                 return $data;
             }
 
             return null;
         } catch (\Exception $e) {
             Log::error("FMP ERROR (search {$query}): " . $e->getMessage());
+
             return null;
         }
     }
 
-    /**
-     * List tradable stocks (FREE TIER SAFE)
-     */
     public function getTradableStocks(): ?array
     {
-        $cacheKey = "fmp_tradable_stocks";
-        
-        return Cache::remember($cacheKey, now()->addDays(30), function () {
+        $cacheKey = 'fmp_tradable_stocks';
+
+        return Cache::remember($cacheKey, now()->addDays(30), function (): ?array {
             try {
-                $response = Http::get("{$this->baseUrl}/stock/list", [
+                $response = Http::get(self::BASE_URL . '/stock/list', [
                     'apikey' => $this->apiKey,
                 ]);
 
-                Log::info("FMP Tradable Stocks response: " . substr($response->body(), 0, 500) . "...");
+                Log::info('FMP Tradable Stocks response: ' . substr($response->body(), 0, 500) . '...');
 
                 if ($response->successful()) {
                     return $response->json();
@@ -212,9 +191,21 @@ class FinancialModelingPrepService
 
                 return null;
             } catch (\Exception $e) {
-                Log::error("FMP ERROR (tradable stocks): " . $e->getMessage());
+                Log::error('FMP ERROR (tradable stocks): ' . $e->getMessage());
+
                 return null;
             }
         });
+    }
+
+    private function hasApiError(array $data, string $context): bool
+    {
+        if (!isset($data['Error Message'])) {
+            return false;
+        }
+
+        Log::error('FMP API Error for ' . $context . ': ' . $data['Error Message']);
+
+        return true;
     }
 }

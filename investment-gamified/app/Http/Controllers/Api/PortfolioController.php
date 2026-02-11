@@ -1,23 +1,26 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Services\PortfolioService;
+use App\Http\Requests\Portfolio\BuyStockRequest;
+use App\Http\Requests\Portfolio\SellStockRequest;
 use App\Models\Portfolio;
+use App\Services\PortfolioService;
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class PortfolioController extends Controller
 {
-    protected $portfolioService;
-
-    public function __construct(PortfolioService $portfolioService)
+    public function __construct(private readonly PortfolioService $portfolioService)
     {
-        $this->portfolioService = $portfolioService;
     }
 
-    public function index(Request $request)
+    public function index(Request $request): JsonResponse
     {
         $page = max(1, (int) $request->query('page', 1));
         $perPage = min(100, max(1, (int) $request->query('per_page', 50)));
@@ -54,18 +57,13 @@ class PortfolioController extends Controller
         ]);
     }
 
-    public function summary(Request $request)
+    public function summary(Request $request): JsonResponse
     {
         $user = $request->user();
         $portfolio = Portfolio::where('user_id', $user->id)->with('stock')->get();
 
-        $totalValue = $portfolio->sum(function ($item) {
-            return $item->quantity * $item->stock->current_price;
-        });
-
-        $totalInvested = $portfolio->sum(function ($item) {
-            return $item->quantity * $item->average_price;
-        });
+        $totalValue = $portfolio->sum(fn (Portfolio $item): float => $item->quantity * $item->stock->current_price);
+        $totalInvested = $portfolio->sum(fn (Portfolio $item): float => $item->quantity * $item->average_price);
 
         return response()->json([
             'success' => true,
@@ -79,20 +77,32 @@ class PortfolioController extends Controller
                 'level' => $user->level,
                 'experience_points' => $user->experience_points,
                 'next_level_xp' => $user->level * 1000,
-            ]
+            ],
         ]);
     }
 
-    public function buyStock(\App\Http\Requests\Portfolio\BuyStockRequest $request)
+    public function buyStock(BuyStockRequest $request): JsonResponse
+    {
+        return $this->handleTradeRequest($request, 'buyStock');
+    }
+
+    public function sellStock(SellStockRequest $request): JsonResponse
+    {
+        return $this->handleTradeRequest($request, 'sellStock');
+    }
+
+    private function handleTradeRequest(FormRequest $request, string $method): JsonResponse
     {
         $validated = $request->validated();
-
         $user = $request->user();
 
-        $result = $this->portfolioService->buyStock($user, $validated['stock_symbol'], $validated['quantity']);
+        $result = $this->portfolioService->{$method}($user, $validated['stock_symbol'], $validated['quantity']);
 
         if (!$result['success']) {
-            return response()->json(['success' => false, 'message' => $result['message']], 400);
+            return response()->json([
+                'success' => false,
+                'message' => $result['message'],
+            ], 400);
         }
 
         return response()->json([
@@ -101,29 +111,26 @@ class PortfolioController extends Controller
             'data' => [
                 'new_balance' => $user->fresh()->balance,
                 'xp_earned' => $result['data']['xp_earned'] ?? null,
-            ]
+            ],
         ]);
     }
 
-    public function sellStock(\App\Http\Requests\Portfolio\SellStockRequest $request)
+    private function transformPortfolioItem(Portfolio $item): array
     {
-        $validated = $request->validated();
+        $profitLoss = ($item->stock->current_price - $item->average_price) * $item->quantity;
+        $profitLossPercentage = $item->average_price > 0
+            ? (($item->stock->current_price - $item->average_price) / $item->average_price) * 100
+            : 0;
 
-        $user = $request->user();
-
-        $result = $this->portfolioService->sellStock($user, $validated['stock_symbol'], $validated['quantity']);
-
-        if (!$result['success']) {
-            return response()->json(['success' => false, 'message' => $result['message']], 400);
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => $result['message'],
-            'data' => [
-                'new_balance' => $user->fresh()->balance,
-                'xp_earned' => $result['data']['xp_earned'] ?? null,
-            ]
-        ]);
+        return [
+            'stock_symbol' => $item->stock->symbol,
+            'stock_name' => $item->stock->name,
+            'quantity' => $item->quantity,
+            'average_price' => $item->average_price,
+            'current_price' => $item->stock->current_price,
+            'total_value' => $item->quantity * $item->stock->current_price,
+            'profit_loss' => $profitLoss,
+            'profit_loss_percentage' => $profitLossPercentage,
+        ];
     }
 }

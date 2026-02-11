@@ -1,9 +1,12 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Portfolio extends Model
 {
@@ -34,7 +37,7 @@ class Portfolio extends Model
         return $this->belongsTo(User::class);
     }
 
-    public function stock()
+    public function stock(): BelongsTo
     {
         return $this->belongsTo(Stock::class);
     }

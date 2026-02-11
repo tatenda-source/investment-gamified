@@ -1,15 +1,18 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Stock;
 use App\Models\StockHistory;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class StockController extends Controller
 {
-    public function index(Request $request)
+    public function index(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'page' => 'integer|min:1',
@@ -51,29 +54,20 @@ class StockController extends Controller
         ]);
     }
 
-    public function show($symbol)
+    public function show(string $symbol): JsonResponse
     {
         $stock = Stock::where('symbol', $symbol)->firstOrFail();
 
         return response()->json([
             'success' => true,
-            'data' => [
-                'symbol' => $stock->symbol,
-                'name' => $stock->name,
-                'current_price' => $stock->current_price,
-                'change_percentage' => $stock->change_percentage,
-                'category' => $stock->category,
-                'description' => $stock->description,
-                'kid_friendly_description' => $stock->kid_friendly_description,
-                'fun_fact' => $stock->fun_fact,
-            ]
+            'data' => $this->transformStock($stock, true),
         ]);
     }
 
-    public function history($symbol, Request $request)
+    public function history(string $symbol, Request $request): JsonResponse
     {
         $stock = Stock::where('symbol', $symbol)->firstOrFail();
-        $days = $request->input('days', 30);
+        $days = (int) $request->input('days', 30);
 
         $history = StockHistory::where('stock_id', $stock->id)
             ->where('date', '>=', now()->subDays($days))
@@ -82,7 +76,26 @@ class StockController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => $history
+            'data' => $history,
         ]);
+    }
+
+    private function transformStock(Stock $stock, bool $withFunFact): array
+    {
+        $payload = [
+            'symbol' => $stock->symbol,
+            'name' => $stock->name,
+            'current_price' => $stock->current_price,
+            'change_percentage' => $stock->change_percentage,
+            'category' => $stock->category,
+            'description' => $stock->description,
+            'kid_friendly_description' => $stock->kid_friendly_description,
+        ];
+
+        if ($withFunFact) {
+            $payload['fun_fact'] = $stock->fun_fact;
+        }
+
+        return $payload;
     }
 }

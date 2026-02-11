@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
@@ -33,7 +35,6 @@ use Illuminate\Database\Eloquent\Model;
  */
 class PortfolioAudit extends Model
 {
-    // Table name is singular to match the audit table naming in migrations
     protected $table = 'portfolio_audit';
 
     protected $guarded = [];

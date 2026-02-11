@@ -1,17 +1,25 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services;
 
 use App\Models\Portfolio;
+use App\Models\PortfolioAudit;
 use App\Models\Stock;
 use App\Models\Transaction;
-use App\Models\PortfolioAudit;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Cache;
 
 class PortfolioService
 {
+    private const ERROR_INVALID_QUANTITY = 'Quantity must be greater than zero';
+    private const ERROR_STOCK_NOT_FOUND = 'Stock not found';
+    private const ERROR_INSUFFICIENT_BALANCE = 'Insufficient balance';
+    private const ERROR_INSUFFICIENT_STOCK = 'Insufficient stock quantity';
+
     /**
      * PortfolioService: Central authority for all money mutations.
      * 
@@ -82,16 +90,15 @@ class PortfolioService
      * @param  int               $quantity
      * @return array
      */
-    public function buyStock($user, string $stockSymbol, int $quantity): array
+    public function buyStock(User $user, string $stockSymbol, int $quantity): array
     {
-        // Guard against invalid quantities
         if ($quantity <= 0) {
-            return ['success' => false, 'message' => 'Quantity must be greater than zero'];
+            return $this->errorResponse(self::ERROR_INVALID_QUANTITY);
         }
 
-        $stock = Stock::where('symbol', $stockSymbol)->first();
-        if (!$stock) {
-            return ['success' => false, 'message' => 'Stock not found'];
+        $stock = $this->findStockBySymbol($stockSymbol);
+        if ($stock === null) {
+            return $this->errorResponse(self::ERROR_STOCK_NOT_FOUND);
         }
 
         $totalCost = $stock->current_price * $quantity;
@@ -227,14 +234,7 @@ class PortfolioService
 
                 // Award XP and check for level up
                 $xpReward = config('game.xp.buy_stock', 10);
-                $lockedUser->experience_points += $xpReward;
-                
-                $levelUpThreshold = $lockedUser->level * config('game.xp.level_up_multiplier', 1000);
-                if ($lockedUser->experience_points >= $levelUpThreshold) {
-                    $lockedUser->level++;
-                    $lockedUser->experience_points = 0; // Or reset to remainder if carrying over
-                }
-                $lockedUser->save();
+                $this->applyXpReward($lockedUser, $xpReward);
 
                 return [
                     'success' => true,
@@ -245,8 +245,7 @@ class PortfolioService
 
             return $result;
         } catch (\Exception $e) {
-            // Catch deadlock or other transaction failures
-            \Log::error('Portfolio buy operation failed', [
+            Log::error('Portfolio buy operation failed', [
                 'user_id' => $user->id,
                 'symbol' => $stockSymbol,
                 'quantity' => $quantity,
@@ -270,16 +269,15 @@ class PortfolioService
      * @param  int               $quantity
      * @return array
      */
-    public function sellStock($user, string $stockSymbol, int $quantity): array
+    public function sellStock(User $user, string $stockSymbol, int $quantity): array
     {
-        // Guard against invalid quantities
         if ($quantity <= 0) {
-            return ['success' => false, 'message' => 'Quantity must be greater than zero'];
+            return $this->errorResponse(self::ERROR_INVALID_QUANTITY);
         }
 
-        $stock = Stock::where('symbol', $stockSymbol)->first();
-        if (!$stock) {
-            return ['success' => false, 'message' => 'Stock not found'];
+        $stock = $this->findStockBySymbol($stockSymbol);
+        if ($stock === null) {
+            return $this->errorResponse(self::ERROR_STOCK_NOT_FOUND);
         }
 
         $xpConfig = Config::get('gamification.xp.sell_reward', 15);
@@ -363,14 +361,7 @@ class PortfolioService
 
                 // Award XP and check for level up
                 $xpReward = config('game.xp.sell_stock', 15);
-                $lockedUser->experience_points += $xpReward;
-                
-                $levelUpThreshold = $lockedUser->level * config('game.xp.level_up_multiplier', 1000);
-                if ($lockedUser->experience_points >= $levelUpThreshold) {
-                    $lockedUser->level++;
-                    $lockedUser->experience_points = 0;
-                }
-                $lockedUser->save();
+                $this->applyXpReward($lockedUser, $xpReward);
 
                 return [
                     'success' => true,
@@ -384,8 +375,7 @@ class PortfolioService
 
             return $result;
         } catch (\Exception $e) {
-            // Catch deadlock or other transaction failures
-            \Log::error('Portfolio sell operation failed', [
+            Log::error('Portfolio sell operation failed', [
                 'user_id' => $user->id,
                 'symbol' => $stockSymbol,
                 'quantity' => $quantity,
@@ -393,5 +383,62 @@ class PortfolioService
             ]);
             throw $e;
         }
+    }
+
+    private function findStockBySymbol(string $stockSymbol): ?Stock
+    {
+        return Stock::where('symbol', $stockSymbol)->first();
+    }
+
+    private function errorResponse(string $message): array
+    {
+        return ['success' => false, 'message' => $message];
+    }
+
+    private function createAuditAndCheckpoint(
+        User $user,
+        Stock $stock,
+        Portfolio $portfolio,
+        string $type,
+        int $quantity,
+        float $price,
+        float $totalAmount,
+    ): void {
+        $snapshot = [
+            'user_id' => $user->id,
+            'stock_id' => $stock->id,
+            'portfolio' => [
+                'quantity' => $portfolio->quantity,
+                'average_price' => $portfolio->average_price,
+            ],
+            'user_balance' => $user->balance,
+        ];
+
+        $audit = PortfolioAudit::create([
+            'user_id' => $user->id,
+            'stock_id' => $stock->id,
+            'type' => $type,
+            'quantity' => $quantity,
+            'price' => $price,
+            'total_amount' => $totalAmount,
+            'portfolio_snapshot' => json_encode($snapshot),
+        ]);
+
+        $portfolio->ledger_checkpoint_id = $audit->id;
+        $portfolio->checksum = hash('sha256', $audit->portfolio_snapshot);
+        $portfolio->save();
+    }
+
+    private function applyXpReward(User $user, int $xpReward): void
+    {
+        $user->experience_points += $xpReward;
+
+        $levelUpThreshold = $user->level * config('game.xp.level_up_multiplier', 1000);
+        if ($user->experience_points >= $levelUpThreshold) {
+            $user->level++;
+            $user->experience_points = 0;
+        }
+
+        $user->save();
     }
 }

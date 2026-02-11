@@ -1,32 +1,29 @@
 <?php
-// app/Console/Commands/ImportStockHistory.php
+
+declare(strict_types=1);
+
 namespace App\Console\Commands;
 
-use Illuminate\Console\Command;
 use App\Models\Stock;
 use App\Models\StockHistory;
 use App\Services\StockApiService;
+use Illuminate\Console\Command;
 
 class ImportStockHistory extends Command
 {
     protected $signature = 'stocks:import-history {symbol?}';
     protected $description = 'Import historical stock data from Alpha Vantage API';
 
-    public function handle(StockApiService $stockApi)
+    public function handle(StockApiService $stockApi): int
     {
         $symbol = $this->argument('symbol');
-        
-        if ($symbol) {
-            $stocks = Stock::where('symbol', $symbol)->get();
-        } else {
-            $stocks = Stock::all();
-        }
+        $stocks = $symbol ? Stock::where('symbol', $symbol)->get() : Stock::all();
 
         foreach ($stocks as $stock) {
             $this->info("Importing history for {$stock->symbol}...");
-            
+
             $history = $stockApi->getHistoricalData($stock->symbol);
-            
+
             if ($history) {
                 foreach ($history as $date => $data) {
                     StockHistory::updateOrCreate(
@@ -39,16 +36,18 @@ class ImportStockHistory extends Command
                             'high_price' => $data['2. high'],
                             'low_price' => $data['3. low'],
                             'close_price' => $data['4. close'],
-                        ]
+                        ],
                     );
                 }
-                
-                $this->info("Imported " . count($history) . " days of history");
+
+                $this->info('Imported ' . count($history) . ' days of history');
             }
-            
-            sleep(12); // Rate limiting
+
+            sleep(12);
         }
 
         $this->info('History import completed!');
+
+        return self::SUCCESS;
     }
 }
