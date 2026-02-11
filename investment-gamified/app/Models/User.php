@@ -1,8 +1,12 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -31,17 +35,17 @@ class User extends Authenticatable
         'balance' => 'decimal:2',
     ];
 
-    public function portfolios()
+    public function portfolios(): HasMany
     {
         return $this->hasMany(Portfolio::class);
     }
 
-    public function transactions()
+    public function transactions(): HasMany
     {
         return $this->hasMany(Transaction::class);
     }
 
-    public function achievements()
+    public function achievements(): BelongsToMany
     {
         return $this->belongsToMany(Achievement::class)
             ->withTimestamps()

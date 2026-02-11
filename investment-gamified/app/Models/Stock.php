@@ -1,9 +1,12 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Stock extends Model
 {
@@ -26,17 +29,17 @@ class Stock extends Model
         'change_percentage' => 'decimal:2',
     ];
 
-    public function portfolios()
+    public function portfolios(): HasMany
     {
         return $this->hasMany(Portfolio::class);
     }
 
-    public function transactions()
+    public function transactions(): HasMany
     {
         return $this->hasMany(Transaction::class);
     }
 
-    public function history()
+    public function history(): HasMany
     {
         return $this->hasMany(StockHistory::class);
     }
