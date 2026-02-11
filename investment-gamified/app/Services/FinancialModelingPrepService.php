@@ -7,6 +7,8 @@ namespace App\Services;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Services\CircuitBreaker;
+use App\Services\ApiQuotaTracker;
 
 class FinancialModelingPrepService
 {
@@ -16,16 +18,28 @@ class FinancialModelingPrepService
 
     public function __construct()
     {
-        $this->apiKey = (string) config('services.fmp.key');
+        $this->apiKey = config('services.fmp.key');
+        $this->circuit = new CircuitBreaker('fmp');
+        $this->quota = new ApiQuotaTracker();
     }
 
     public function getQuote(string $symbol): ?array
     {
         $cacheKey = "fmp_quote_{$symbol}";
 
-        return Cache::remember($cacheKey, now()->addMinutes(5), function () use ($symbol): ?array {
-            try {
-                $response = Http::timeout(10)->get(self::BASE_URL . "/quote/{$symbol}", [
+        // Try stale cache first as fallback
+        $stale = Cache::get($cacheKey);
+
+        return $this->circuit->call(function () use ($symbol, $cacheKey) {
+            if (! $this->quota->hasQuota('fmp')) {
+                Log::warning('FMP quota exhausted, returning stale cache if available');
+                return Cache::get($cacheKey);
+            }
+
+            $this->quota->recordRequest('fmp');
+
+            return Cache::remember($cacheKey, now()->addMinutes(5), function () use ($symbol) {
+                $response = Http::timeout(10)->get("{$this->baseUrl}/quote/{$symbol}", [
                     'apikey' => $this->apiKey,
                 ]);
 
@@ -34,8 +48,9 @@ class FinancialModelingPrepService
                 if ($response->successful()) {
                     $data = $response->json();
 
-                    if ($this->hasApiError($data, "{$symbol}")) {
-                        return null;
+                    if (isset($data['Error Message'])) {
+                        Log::error("FMP API Error for {$symbol}: " . $data['Error Message']);
+                        throw new \Exception('FMP API error');
                     }
 
                     if (!empty($data) && isset($data[0])) {
@@ -51,12 +66,10 @@ class FinancialModelingPrepService
                     }
                 }
 
-                return null;
-            } catch (\Exception $e) {
-                Log::error("FMP ERROR (quote {$symbol}): " . $e->getMessage());
-
-                return null;
-            }
+                throw new \Exception('FMP unexpected response');
+            });
+        }, function () use ($stale) {
+            return $stale ?? null;
         });
     }
 

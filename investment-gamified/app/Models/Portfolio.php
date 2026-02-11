@@ -23,7 +23,16 @@ class Portfolio extends Model
         'average_price' => 'decimal:2',
     ];
 
-    public function user(): BelongsTo
+    protected static function booted()
+    {
+        // Exclude zero-quantity entries by default at the model level so
+        // API endpoints and queries do not return meaningless holdings.
+        static::addGlobalScope('has_quantity', function ($builder) {
+            $builder->where('quantity', '>', 0);
+        });
+    }
+
+    public function user()
     {
         return $this->belongsTo(User::class);
     }

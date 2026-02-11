@@ -12,6 +12,7 @@ use App\Services\PortfolioService;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class PortfolioController extends Controller
 {
@@ -21,13 +22,38 @@ class PortfolioController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $portfolio = Portfolio::with('stock')
-            ->where('user_id', $request->user()->id)
-            ->get();
+        $page = max(1, (int) $request->query('page', 1));
+        $perPage = min(100, max(1, (int) $request->query('per_page', 50)));
+
+        // Database-level projection: join portfolios -> stocks and compute aggregates in SQL.
+        $query = DB::table('portfolios as p')
+            ->join('stocks as s', 'p.stock_id', '=', 's.id')
+            ->where('p.user_id', $request->user()->id)
+            ->where('p.quantity', '>', 0)
+            ->select(
+                'p.id as portfolio_id',
+                's.id as stock_id',
+                's.symbol as stock_symbol',
+                's.name as stock_name',
+                'p.quantity',
+                'p.average_price',
+                's.current_price',
+                DB::raw('p.quantity * s.current_price as total_value'),
+                DB::raw('(s.current_price - p.average_price) * p.quantity as profit_loss'),
+                DB::raw('CASE WHEN p.average_price = 0 THEN 0 ELSE ((s.current_price - p.average_price) / p.average_price) * 100 END as profit_loss_percentage')
+            );
+
+        $paginator = $query->paginate($perPage, ['*'], 'page', $page);
 
         return response()->json([
             'success' => true,
-            'data' => $portfolio->map(fn (Portfolio $item): array => $this->transformPortfolioItem($item)),
+            'data' => $paginator->items(),
+            'meta' => [
+                'current_page' => $paginator->currentPage(),
+                'per_page' => $paginator->perPage(),
+                'last_page' => $paginator->lastPage(),
+                'total' => $paginator->total(),
+            ],
         ]);
     }
 

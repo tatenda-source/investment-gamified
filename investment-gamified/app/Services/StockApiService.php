@@ -7,30 +7,54 @@ namespace App\Services;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Services\CircuitBreaker;
+use App\Services\ApiQuotaTracker;
 
 class StockApiService
 {
-    private const BASE_URL = 'https://www.alphavantage.co/query';
-
-    private string $apiKey;
+    protected ?string $apiKey;
+    protected string $baseUrl = 'https://www.alphavantage.co/query';
+    protected $circuit;
+    protected $quota;
 
     public function __construct()
     {
-        $this->apiKey = (string) config('services.alphavantage.key');
+        $this->apiKey = config('services.alphavantage.key');
+        $this->circuit = new CircuitBreaker('alphavantage');
+        $this->quota = new ApiQuotaTracker();
     }
 
     public function getQuote(string $symbol): ?array
     {
         $cacheKey = "stock_quote_{$symbol}";
+        
+        return Cache::remember($cacheKey, now()->addMinutes(5), function () use ($symbol) {
+            try {
+                $response = Http::timeout(5)
+                    ->retry(3, 100)
+                    ->get($this->baseUrl, [
+                    'function' => 'GLOBAL_QUOTE',
+                    'symbol' => $symbol,
+                    'apikey' => $this->apiKey,
+                ]);
 
-        return Cache::remember($cacheKey, now()->addMinutes(5), function () use ($symbol): ?array {
-            $data = $this->fetchData([
-                'function' => 'GLOBAL_QUOTE',
-                'symbol' => $symbol,
-                'apikey' => $this->apiKey,
-            ], 5, "Failed to fetch quote for {$symbol}");
+                if ($response->successful()) {
+                    $data = $response->json();
 
-            if (!isset($data['Global Quote'])) {
+                    if (isset($data['Global Quote'])) {
+                        $quote = $data['Global Quote'];
+                        return [
+                            'symbol' => $quote['01. symbol'] ?? null,
+                            'price' => $quote['05. price'] ?? null,
+                            'change' => $quote['09. change'] ?? null,
+                            'change_percent' => $quote['10. change percent'] ?? null,
+                        ];
+                    }
+                }
+
+                throw new \Exception('AlphaVantage unexpected response');
+            } catch (\Exception $e) {
+                Log::error("Failed to fetch quote for {$symbol}: " . $e->getMessage());
                 return null;
             }
 

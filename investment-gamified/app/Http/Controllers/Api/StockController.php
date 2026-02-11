@@ -14,15 +14,43 @@ class StockController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $stocks = Stock::query()
-            ->when($request->category, function ($query, $category): void {
-                $query->where('category', $category);
-            })
-            ->get();
+        $validated = $request->validate([
+            'page' => 'integer|min:1',
+            'per_page' => 'integer|min:1|max:50',
+            'category' => 'string|nullable',
+            'search' => 'string|nullable|min:2|max:50',
+        ]);
+
+        $page = $request->query('page', 1);
+        $perPage = $request->query('per_page', 20);
+
+        $query = Stock::query();
+
+        if ($request->filled('category')) {
+            $query->where('category', $request->query('category'));
+        }
+
+        if ($request->filled('search')) {
+            $q = $request->query('search');
+            // Use LIKE fallback if fulltext not available
+            $query->where(function ($qbuilder) use ($q) {
+                $qbuilder->where('name', 'like', "%{$q}%")
+                    ->orWhere('symbol', 'like', "%{$q}%");
+            });
+        }
+
+        $stocks = $query->select('symbol', 'name', 'current_price', 'change_percentage', 'category', 'description', 'kid_friendly_description')
+            ->paginate($perPage, ['*'], 'page', $page);
 
         return response()->json([
             'success' => true,
-            'data' => $stocks->map(fn (Stock $stock): array => $this->transformStock($stock, false)),
+            'data' => $stocks->items(),
+            'meta' => [
+                'current_page' => $stocks->currentPage(),
+                'per_page' => $stocks->perPage(),
+                'last_page' => $stocks->lastPage(),
+                'total' => $stocks->total(),
+            ],
         ]);
     }
 
